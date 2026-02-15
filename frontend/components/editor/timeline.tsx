@@ -149,6 +149,7 @@ export function Timeline() {
     const suppressNextTrackClickRef = useRef(false);
     const isLocalEditRef = useRef(false);
     const isLocalSpeedEditRef = useRef(false);
+    const toolbarActionRef = useRef<(label: string) => void>(() => undefined);
 
     const commitTrimWidgetsToContext = useCallback(
         (widgets: TrimWidget[]) => {
@@ -525,6 +526,56 @@ export function Timeline() {
                 break;
         }
     }
+
+    useEffect(() => {
+        toolbarActionRef.current = handleToolbarAction;
+    });
+
+    useEffect(() => {
+        function isTypingTarget(target: EventTarget | null): boolean {
+            if (!(target instanceof HTMLElement)) return false;
+            const tag = target.tagName.toLowerCase();
+            return (
+                tag === "input" ||
+                tag === "textarea" ||
+                tag === "select" ||
+                Boolean(target.closest("[contenteditable='true']"))
+            );
+        }
+
+        function onKeyDown(e: KeyboardEvent) {
+            if (!hasVideo || isTypingTarget(e.target)) return;
+
+            const key = e.key.toLowerCase();
+            if (key === "a") {
+                e.preventDefault();
+                toolbarActionRef.current("Add segment");
+                return;
+            }
+            if (e.key === "+" || (e.key === "=" && e.shiftKey)) {
+                e.preventDefault();
+                toolbarActionRef.current("Zoom in");
+                return;
+            }
+            if (e.key === "-" || e.key === "_") {
+                e.preventDefault();
+                toolbarActionRef.current("Zoom out");
+                return;
+            }
+            if (key === "t") {
+                e.preventDefault();
+                toolbarActionRef.current("Trim");
+                return;
+            }
+            if (e.key === "Backspace" || e.key === "Delete") {
+                e.preventDefault();
+                toolbarActionRef.current("Delete");
+            }
+        }
+
+        window.addEventListener("keydown", onKeyDown);
+        return () => window.removeEventListener("keydown", onKeyDown);
+    }, [hasVideo]);
 
     return (
         <TooltipProvider delayDuration={200}>
