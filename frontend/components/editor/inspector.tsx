@@ -72,7 +72,7 @@ const PLACEHOLDER_MESSAGES: ChatMessage[] = [
         id: "1",
         role: "assistant",
         content:
-            "Hey! I'm your AI video editor. Upload a video and tell me what edits you'd like — trim, cut, extract a clip, and more.",
+            "Hey! I can trim, cut, extract, and speed up sections. Upload a short video and iterate with me.",
     },
 ];
 const MAX_VIDEO_DURATION_SEC = 10;
