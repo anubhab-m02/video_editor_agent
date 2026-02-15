@@ -14,6 +14,11 @@ type ChatMessage = {
     content: string;
 };
 
+type ChatTurn = {
+    role: "user" | "assistant";
+    content: string;
+};
+
 type SpriteSheet = {
     sheet_index: number;
     image_url: string;
@@ -71,6 +76,69 @@ const PLACEHOLDER_MESSAGES: ChatMessage[] = [
     },
 ];
 const MAX_VIDEO_DURATION_SEC = 10;
+const MAX_CONTEXT_MESSAGES = 10;
+const RANGE_EPSILON_SEC = 0.03;
+
+function buildConversationSummary(messages: ChatMessage[]): string {
+    const turns = messages.filter((m) => m.content.trim().length > 0);
+    if (turns.length <= MAX_CONTEXT_MESSAGES) return "";
+    const older = turns.slice(0, -MAX_CONTEXT_MESSAGES);
+    const userGoals = older
+        .filter((m) => m.role === "user")
+        .slice(-3)
+        .map((m) => m.content.replace(/\s+/g, " ").trim())
+        .filter(Boolean);
+    if (userGoals.length === 0) return "";
+    return `Earlier user goals: ${userGoals.join(" | ")}`.slice(0, 500);
+}
+
+function buildChatHistory(messages: ChatMessage[]): ChatTurn[] {
+    return messages
+        .slice(-MAX_CONTEXT_MESSAGES)
+        .map((m) => ({
+            role: m.role,
+            content: m.content.replace(/\s+/g, " ").trim().slice(0, 300),
+        }))
+        .filter((m) => m.content.length > 0);
+}
+
+function mergeTrimSuggestions(
+    existing: Array<{ start: number; end: number }>,
+    incoming: CutSuggestion[]
+): Array<{ start: number; end: number }> {
+    const next = [...existing];
+    for (const item of incoming) {
+        const duplicate = next.some(
+            (r) =>
+                Math.abs(r.start - item.start_sec) <= RANGE_EPSILON_SEC &&
+                Math.abs(r.end - item.end_sec) <= RANGE_EPSILON_SEC
+        );
+        if (!duplicate) {
+            next.push({ start: item.start_sec, end: item.end_sec });
+        }
+    }
+    return next;
+}
+
+function mergeSpeedSuggestions(
+    existing: Array<{ start: number; end: number; speed: number }>,
+    incoming: CutSuggestion[]
+): Array<{ start: number; end: number; speed: number }> {
+    const next = [...existing];
+    for (const item of incoming) {
+        const speed = item.speed_multiplier && item.speed_multiplier > 0 ? item.speed_multiplier : 2;
+        const duplicate = next.some(
+            (r) =>
+                Math.abs(r.start - item.start_sec) <= RANGE_EPSILON_SEC &&
+                Math.abs(r.end - item.end_sec) <= RANGE_EPSILON_SEC &&
+                Math.abs(r.speed - speed) <= 0.01
+        );
+        if (!duplicate) {
+            next.push({ start: item.start_sec, end: item.end_sec, speed });
+        }
+    }
+    return next;
+}
 
 export function Inspector() {
     const { sourceFile, duration, trimRanges, speedRanges, setTrimRanges, setSpeedRanges } = useVideo();
@@ -120,6 +188,7 @@ export function Inspector() {
             role: "user",
             content: input.trim(),
         };
+        const nextMessages = [...messages, userMsg];
         setMessages((prev) => [...prev, userMsg]);
         setInput("");
         if (!spriteData) {
@@ -145,6 +214,10 @@ export function Inspector() {
                     sprite_interval_sec: spriteData.interval_sec,
                     total_frames: spriteData.total_frames,
                     sheets_count: spriteData.sheets.length,
+                    chat_history: buildChatHistory(nextMessages),
+                    conversation_summary: buildConversationSummary(nextMessages),
+                    trim_ranges: trimRanges,
+                    speed_ranges: speedRanges,
                 }),
             });
             const data = (await response.json()) as SuggestCutsResponse | { detail?: string };
@@ -156,20 +229,21 @@ export function Inspector() {
             setSuggestions(result.suggestions);
             const trimSuggestions = result.suggestions.filter((s) => s.action === "trim_video");
             const speedSuggestions = result.suggestions.filter((s) => s.action === "speed_video");
-            setTrimRanges(trimSuggestions.map((s) => ({ start: s.start_sec, end: s.end_sec })));
-            setSpeedRanges(
-                speedSuggestions.map((s) => ({
-                    start: s.start_sec,
-                    end: s.end_sec,
-                    speed: s.speed_multiplier && s.speed_multiplier > 0 ? s.speed_multiplier : 2,
-                }))
-            );
+
+            // Iterative behavior: merge new AI suggestions into the existing timeline
+            // instead of replacing all previous edits.
+            if (trimSuggestions.length > 0) {
+                setTrimRanges(mergeTrimSuggestions(trimRanges, trimSuggestions));
+            }
+            if (speedSuggestions.length > 0) {
+                setSpeedRanges(mergeSpeedSuggestions(speedRanges, speedSuggestions));
+            }
             setMessages((prev) => [
                 ...prev,
                 {
                     id: (Date.now() + 1).toString(),
                     role: "assistant",
-                    content: `Applied ${trimSuggestions.length} trim and ${speedSuggestions.length} speed suggestion(s) via ${result.model}.`,
+                    content: `Added ${trimSuggestions.length} trim and ${speedSuggestions.length} speed suggestion(s) via ${result.model}.`,
                 },
             ]);
         } catch (error) {

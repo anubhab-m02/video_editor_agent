@@ -90,6 +90,40 @@ function normalizeSpeedRanges(
     .sort((a, b) => a.start - b.start);
 }
 
+/**
+ * Remove any intervals in `targets` that overlap with `subtract`.
+ * Partially-overlapping targets are split or shrunk; fully-covered targets
+ * are dropped. Returns a new array (never mutates).
+ */
+function subtractRanges<T extends { start: number; end: number }>(
+  targets: T[],
+  subtract: Array<{ start: number; end: number }>,
+  minDuration: number
+): T[] {
+  let result: T[] = [...targets];
+  for (const sub of subtract) {
+    const next: T[] = [];
+    for (const t of result) {
+      // No overlap → keep as-is
+      if (t.end <= sub.start || t.start >= sub.end) {
+        next.push(t);
+        continue;
+      }
+      // Left remnant
+      if (t.start < sub.start && sub.start - t.start > minDuration) {
+        next.push({ ...t, end: sub.start });
+      }
+      // Right remnant
+      if (t.end > sub.end && t.end - sub.end > minDuration) {
+        next.push({ ...t, start: sub.end });
+      }
+      // Fully covered → dropped (neither remnant added)
+    }
+    result = next;
+  }
+  return result;
+}
+
 function makeClamp(duration: number) {
   return (time: number) => {
     if (duration <= 0) return Math.max(0, time);
@@ -207,30 +241,37 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
   },
 
   setTrimRange: (start, end) => {
-    const clamp = makeClamp(get().duration);
+    const state = get();
+    const clamp = makeClamp(state.duration);
     const normalized = normalizeTrimRanges([{ start, end }], clamp);
+    const prunedSpeed = subtractRanges(state.speedRanges, normalized, MIN_SPEED_DURATION_SEC);
     if (normalized.length === 0) {
-      set({ trimStart: 0, trimEnd: 0, trimRanges: [] });
+      set({ trimStart: 0, trimEnd: 0, trimRanges: [], speedRanges: prunedSpeed });
       return;
     }
     set({
       trimStart: normalized[0].start,
       trimEnd: normalized[0].end,
       trimRanges: normalized,
+      speedRanges: prunedSpeed,
     });
   },
 
   setTrimRanges: (ranges) => {
-    const clamp = makeClamp(get().duration);
+    const state = get();
+    const clamp = makeClamp(state.duration);
     const normalized = normalizeTrimRanges(ranges, clamp);
+    // Prune speed ranges that overlap with newly-set trim ranges
+    const prunedSpeed = subtractRanges(state.speedRanges, normalized, MIN_SPEED_DURATION_SEC);
     if (normalized.length === 0) {
-      set({ trimStart: 0, trimEnd: 0, trimRanges: [] });
+      set({ trimStart: 0, trimEnd: 0, trimRanges: [], speedRanges: prunedSpeed });
       return;
     }
     set({
       trimStart: normalized[0].start,
       trimEnd: normalized[0].end,
       trimRanges: normalized,
+      speedRanges: prunedSpeed,
     });
   },
 
@@ -255,9 +296,14 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
   },
 
   setSpeedRanges: (ranges) => {
-    const clamp = makeClamp(get().duration);
+    const state = get();
+    const clamp = makeClamp(state.duration);
     const normalized = normalizeSpeedRanges(ranges, clamp);
-    set({ speedRanges: normalized });
+    // Trim has higher priority than speed; clip speed around trimmed gaps.
+    const prunedSpeed = subtractRanges(normalized, state.trimRanges, MIN_SPEED_DURATION_SEC);
+    set({
+      speedRanges: prunedSpeed,
+    });
   },
 
   setCurrentTime: (time) => set({ currentTime: time }),

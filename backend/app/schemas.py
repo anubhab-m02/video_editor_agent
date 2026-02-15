@@ -85,23 +85,38 @@ class EditSuggestion(BaseModel):
     speed_multiplier: Optional[float] = None
 
 
+class ChatTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=2000)
+
+
+class SpeedRangeInput(BaseModel):
+    start: float
+    end: float
+    speed: float
+
+
+class TrimRange(BaseModel):
+    start: float
+    end: float
+
+
 class SuggestCutsRequest(BaseModel):
     prompt: str = Field(min_length=1)
     duration_sec: float = Field(gt=0)
     sprite_interval_sec: float = Field(gt=0)
     total_frames: int = Field(gt=0)
     sheets_count: int = Field(gt=0)
+    chat_history: list[ChatTurn] = Field(default_factory=list)
+    conversation_summary: Optional[str] = None
+    trim_ranges: list[TrimRange] = Field(default_factory=list)
+    speed_ranges: list[SpeedRangeInput] = Field(default_factory=list)
 
 
 class SuggestCutsResponse(BaseModel):
     suggestions: list[EditSuggestion]
     model: str
     strategy: str
-
-
-class TrimRange(BaseModel):
-    start: float
-    end: float
 
 
 class ExportResponse(BaseModel):

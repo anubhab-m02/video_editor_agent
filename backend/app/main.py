@@ -428,6 +428,10 @@ async def ai_suggest_cuts_from_sprites(payload: SuggestCutsRequest) -> SuggestCu
             sprite_interval_sec=payload.sprite_interval_sec,
             total_frames=payload.total_frames,
             sheets_count=payload.sheets_count,
+            chat_history=[item.model_dump() for item in payload.chat_history],
+            conversation_summary=payload.conversation_summary,
+            trim_ranges=[item.model_dump() for item in payload.trim_ranges],
+            speed_ranges=[item.model_dump() for item in payload.speed_ranges],
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

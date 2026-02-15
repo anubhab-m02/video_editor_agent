@@ -4,12 +4,15 @@ import json
 import logging
 import os
 import re
+from typing import Optional
 
 import httpx
 
 from .validators import parse_time_like
 
 logger = logging.getLogger(__name__)
+MAX_CONTEXT_TURNS = 10
+MAX_SUMMARY_CHARS = 500
 
 
 def _extract_json(text: str) -> dict:
@@ -173,6 +176,10 @@ async def suggest_cuts_from_sprites(
     sprite_interval_sec: float,
     total_frames: int,
     sheets_count: int,
+    chat_history: Optional[list[dict]] = None,
+    conversation_summary: Optional[str] = None,
+    trim_ranges: Optional[list[dict]] = None,
+    speed_ranges: Optional[list[dict]] = None,
 ) -> dict:
     api_key = os.getenv("GEMINI_API_KEY")
     logger.info(
@@ -183,6 +190,9 @@ async def suggest_cuts_from_sprites(
             "total_frames": total_frames,
             "sheets_count": sheets_count,
             "prompt": prompt,
+            "chat_history_count": len(chat_history or []),
+            "trim_ranges_count": len(trim_ranges or []),
+            "speed_ranges_count": len(speed_ranges or []),
         },
     )
     if not api_key:
@@ -212,10 +222,33 @@ async def suggest_cuts_from_sprites(
         "- If prompt gives explicit ranges, prioritize those.\n"
         "- Use speed_video/apply_speed_range when user asks speed-up/faster playback.\n"
         "- For speed suggestions, include speed_multiplier (default 2.0 if unclear).\n"
+        "- Use conversation context and existing timeline ranges for iterative follow-ups.\n"
+        "- Avoid suggesting duplicate ranges already present unless user asks to modify them.\n"
+    )
+
+    safe_summary = (conversation_summary or "").strip()[:MAX_SUMMARY_CHARS]
+    compact_history = (chat_history or [])[-MAX_CONTEXT_TURNS:]
+    compact_history_lines: list[str] = []
+    for turn in compact_history:
+        role = str(turn.get("role", "")).strip().lower()
+        if role not in {"user", "assistant"}:
+            continue
+        content = str(turn.get("content", "")).strip().replace("\n", " ")
+        if not content:
+            continue
+        compact_history_lines.append(f"{role}: {content[:280]}")
+    current_state = {
+        "trim_ranges": trim_ranges or [],
+        "speed_ranges": speed_ranges or [],
+    }
+    context_block = (
+        f"Conversation summary: {safe_summary or '(none)'}\n"
+        f"Recent chat turns:\n{chr(10).join(compact_history_lines) if compact_history_lines else '(none)'}\n"
+        f"Current timeline state: {json.dumps(current_state)}"
     )
 
     payload = {
-        "contents": [{"parts": [{"text": f"{instructions}\nUser prompt: {prompt}"}]}],
+        "contents": [{"parts": [{"text": f"{instructions}\n{context_block}\nUser prompt: {prompt}"}]}],
         "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
     }
 

@@ -85,4 +85,34 @@ describe("video-store", () => {
     expect(ranges[0].speed).toBe(0.25);
     expect(ranges[1].speed).toBe(16);
   });
+
+  it("splits full-speed range when multiple trims are added", () => {
+    resetStore();
+    const state = useVideoStore.getState();
+    state.setSpeedRanges([{ start: 0, end: 10, speed: 2 }]);
+    state.setTrimRanges([
+      { start: 3, end: 4 },
+      { start: 7, end: 8 },
+    ]);
+
+    const ranges = useVideoStore.getState().speedRanges;
+    expect(ranges).toEqual([
+      { start: 0, end: 3, speed: 2 },
+      { start: 4, end: 7, speed: 2 },
+      { start: 8, end: 10, speed: 2 },
+    ]);
+  });
+
+  it("clips incoming speed ranges to avoid trimmed sections", () => {
+    resetStore();
+    const state = useVideoStore.getState();
+    state.setTrimRanges([{ start: 3, end: 7 }]);
+    state.setSpeedRanges([{ start: 2, end: 8, speed: 2 }]);
+
+    const ranges = useVideoStore.getState().speedRanges;
+    expect(ranges).toEqual([
+      { start: 2, end: 3, speed: 2 },
+      { start: 7, end: 8, speed: 2 },
+    ]);
+  });
 });
