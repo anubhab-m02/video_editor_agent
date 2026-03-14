@@ -1,0 +1,5 @@
+procs:
+  backend:
+    shell: "cd backend && .venv/bin/uvicorn app.main:app --reload --port 8000"
+  frontend:
+    shell: "cd frontend && npm run dev"
