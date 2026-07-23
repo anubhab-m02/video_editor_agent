@@ -9,7 +9,7 @@ An intelligent, AI-assisted video editing platform that leverages Large Language
 - **🤖 AI-Powered Editing**: Communicate with your video via Google Gemini. Trimming, cutting, and speed adjustments are handled through natural language intent parsing.
 - **⏱️ Professional Timeline**: A high-fidelity, interactive timeline built with custom React components, offering multi-segment manipulation and frame-accurate seeking.
 - **🖼️ Intelligent Sprite Engine**: Low-latency video scrubbing powered by an automated sprite-sheet generation engine, optimizing for both performance and AI context.
-- **📉 AI Insight Engine**: Token-optimized analysis that provides smart cut suggestions based on visual content, allowing for rapid editing workflows.
+- **📉 AI Insight Engine**: Smart cut suggestions from prompt + timeline context, with sprite-sheet visual analysis in progress.
 - **⚡ High-Performance Backend**: A robust FastAPI backend integrated with FFmpeg for seamless, reliable, and multi-threaded video processing.
 
 ## 🛠️ Tech Stack
@@ -69,9 +69,9 @@ Visit `http://localhost:3000` to start editing.
 
 ## 🧬 API Highlights
 
-- `POST /edit-request`: Converts NLP prompts (e.g., "remove the middle 5 seconds") into FFmpeg operations.
-- `POST /analyze/sprites`: Generates intelligent tile-based previews for AI analysis and UI scrubbing.
-- `POST /ai/suggest-cuts-from-sprites`: Returns AI-driven timestamp suggestions based on user goals and visual density.
+- `POST /analyze/sprites`: Generates tile-based previews for the UI scrubber.
+- `POST /ai/suggest-cuts-from-sprites`: Returns AI-driven timestamp suggestions based on user goals and video metadata.
+- `POST /export/from-file`: Applies trim/speed ranges and renders the final export.
 
 ---
 
