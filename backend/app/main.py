@@ -5,7 +5,7 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -14,10 +14,8 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 
-from .gemini_agent import parse_intent, suggest_cuts_from_sprites
+from .gemini_agent import suggest_cuts_from_sprites
 from .schemas import (
-    EditRequest,
-    EditResponse,
     ExportResponse,
     SuggestCutsRequest,
     SuggestCutsResponse,
@@ -25,7 +23,6 @@ from .schemas import (
     TokenEstimateRequest,
     TokenEstimateResponse,
     TrimRange,
-    UploadResponse,
 )
 from .services.media_service import (
     probe_duration_or_cleanup,
@@ -40,7 +37,6 @@ from .video_tools import (
     generate_sprite_sheets,
     get_duration_sec,
     remove_segments_and_stitch,
-    remove_segment_and_stitch,
     render_segments_with_speed,
 )
 
@@ -173,119 +169,9 @@ app.mount("/media/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="upload
 app.mount("/media/outputs", StaticFiles(directory=str(OUTPUT_DIR)), name="outputs")
 app.mount("/media/sprites", StaticFiles(directory=str(SPRITES_DIR)), name="sprites")
 
-video_sessions: Dict[str, dict] = {}
-
-
 @app.get("/health")
 def health() -> dict:
     return {"ok": True}
-
-
-@app.post("/upload", response_model=UploadResponse)
-async def upload_video(file: UploadFile = File(...)) -> UploadResponse:
-    max_mb = int(os.getenv("MAX_FILE_SIZE_MB", "500"))
-    try:
-        save_path = await save_upload_file(
-            file=file, upload_dir=UPLOAD_DIR, max_file_size_mb=max_mb
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=413, detail=str(exc)) from exc
-
-    try:
-        duration = probe_duration_or_cleanup(save_path)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    _enforce_max_duration(duration)
-
-    video_id = str(uuid4())
-    filename = save_path.name
-    video_sessions[video_id] = {
-        "input_path": save_path,
-        "duration_sec": duration,
-        "filename": filename,
-    }
-    return UploadResponse(
-        video_id=video_id,
-        source_url=f"/media/uploads/{filename}",
-        duration_sec=duration,
-        filename=filename,
-    )
-
-
-@app.post("/edit-request", response_model=EditResponse)
-async def edit_request(payload: EditRequest) -> EditResponse:
-    session = video_sessions.get(payload.video_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Unknown video_id")
-
-    duration = float(session["duration_sec"])
-    action = "trim_video"
-    operation = "remove_segment"
-    start_sec = 0.0
-    end_sec = 0.0
-    try:
-        intent = await parse_intent(payload.prompt, duration)
-        action = intent.get("action", "trim_video")
-        operation = intent.get("operation", "remove_segment")
-        start_sec = float(intent["start_sec"])
-        end_sec = float(intent["end_sec"])
-        validate_trim(start_sec, end_sec, duration)
-        if action == "trim_video":
-            if operation not in {"remove_segment", "extract_range"}:
-                raise ValueError(f"Unsupported trim operation: {operation}")
-            if operation == "remove_segment":
-                # Removing the full duration would produce an empty file.
-                if start_sec <= 0 and end_sec >= duration:
-                    raise ValueError("Cannot remove the entire video range.")
-                output_path = remove_segment_and_stitch(
-                    input_path=Path(session["input_path"]),
-                    output_dir=OUTPUT_DIR,
-                    start_sec=start_sec,
-                    end_sec=end_sec,
-                )
-            else:
-                output_path = extract_range(
-                    input_path=Path(session["input_path"]),
-                    output_dir=OUTPUT_DIR,
-                    start_sec=start_sec,
-                    end_sec=end_sec,
-                )
-        elif action == "speed_video":
-            if operation != "apply_speed_range":
-                raise ValueError(f"Unsupported speed operation: {operation}")
-            speed_multiplier = float(intent.get("speed_multiplier", 2.0))
-            if speed_multiplier <= 0:
-                raise ValueError("speed_multiplier must be greater than 0.")
-            speed_segments = _build_speed_segments(
-                duration_sec=duration,
-                trim_ranges=[],
-                speed_ranges=[(start_sec, end_sec, speed_multiplier)],
-            )
-            output_path = render_segments_with_speed(
-                input_path=Path(session["input_path"]),
-                output_dir=OUTPUT_DIR,
-                segments=speed_segments,
-            )
-        else:
-            raise ValueError(f"Unsupported action: {action}")
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    return EditResponse(
-        action=action,
-        operation=operation,
-        reason=intent.get("reason", "Applied edit."),
-        output={
-            "start_sec": start_sec,
-            "end_sec": end_sec,
-            "output_url": f"/media/outputs/{output_path.name}",
-            "output_name": output_path.name,
-        },
-    )
 
 
 @app.post("/analyze/sprites", response_model=SpriteAnalysisResponse)

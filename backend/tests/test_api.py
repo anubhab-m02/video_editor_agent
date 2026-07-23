@@ -1,6 +1,5 @@
 from pathlib import Path
 import sys
-import asyncio
 
 from fastapi.testclient import TestClient
 
@@ -9,7 +8,6 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.main import app
-from app.gemini_agent import parse_intent
 
 
 client = TestClient(app)
@@ -134,16 +132,6 @@ def test_suggest_cuts_accepts_context_fields(monkeypatch):
     assert captured["speed_ranges"] == [{"start": 2.0, "end": 3.0, "speed": 2.0}]
 
 
-def test_parse_intent_fallback_speed_range(monkeypatch):
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    intent = asyncio.run(parse_intent("Speed up 2x from 4 to 5 seconds", 10))
-    assert intent["action"] == "speed_video"
-    assert intent["operation"] == "apply_speed_range"
-    assert intent["start_sec"] == 4
-    assert intent["end_sec"] == 5
-    assert intent["speed_multiplier"] == 2
-
-
 def test_token_estimate_from_file_rejects_over_max_duration(monkeypatch, tmp_path):
     import app.main as main
 
@@ -261,51 +249,3 @@ def test_export_splits_full_speed_when_trims_are_present(monkeypatch, tmp_path):
     assert captured["segments"] == [(0.0, 3.0, 2.0), (4.0, 6.0, 2.0), (7.0, 8.0, 2.0)]
 
 
-def test_edit_request_applies_speed_range(monkeypatch, tmp_path):
-    import app.main as main
-
-    source_file = tmp_path / "source.mp4"
-    source_file.write_bytes(b"dummy")
-    rendered_file = tmp_path / "rendered.mp4"
-    rendered_file.write_bytes(b"rendered")
-
-    main.video_sessions["speed-test"] = {
-        "input_path": source_file,
-        "duration_sec": 8.0,
-        "filename": "source.mp4",
-    }
-
-    async def fake_parse_intent(prompt: str, duration_sec: float):
-        return {
-            "action": "speed_video",
-            "operation": "apply_speed_range",
-            "start_sec": 1.0,
-            "end_sec": 3.0,
-            "speed_multiplier": 2.0,
-            "reason": "Speed up highlighted section.",
-        }
-
-    captured = {}
-
-    def fake_render_segments_with_speed(*, input_path, output_dir, segments):
-        captured["segments"] = segments
-        return rendered_file
-
-    monkeypatch.setattr(main, "parse_intent", fake_parse_intent)
-    monkeypatch.setattr(main, "render_segments_with_speed", fake_render_segments_with_speed)
-
-    response = client.post(
-        "/edit-request",
-        json={
-            "video_id": "speed-test",
-            "prompt": "Speed this section",
-        },
-    )
-
-    main.video_sessions.pop("speed-test", None)
-
-    assert response.status_code == 200
-    data = response.json()
-    assert data["action"] == "speed_video"
-    assert data["operation"] == "apply_speed_range"
-    assert captured["segments"] == [(0.0, 1.0, 1.0), (1.0, 3.0, 2.0), (3.0, 8.0, 1.0)]
