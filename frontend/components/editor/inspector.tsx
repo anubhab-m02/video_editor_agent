@@ -32,6 +32,7 @@ type SpriteAnalysisResponse = {
     duration_sec: number;
     interval_sec: number;
     total_frames: number;
+    sprite_job_id: string;
     sheets: SpriteSheet[];
 };
 
@@ -82,6 +83,15 @@ const RANGE_EPSILON_SEC = 0.03;
 function formatDurationLabel(totalSeconds: number): string {
     const minutes = Math.round(totalSeconds / 60);
     return minutes >= 1 ? `${minutes} min` : `${totalSeconds}s`;
+}
+
+// ponytail: fixed frame budget keeps sprite sheet count (and FFmpeg calls) bounded
+// regardless of video length, instead of the old hardcoded 0.25s interval blowing up
+// at the new 20-min ceiling. Clamped to 0.25s minimum to match prior short-clip behavior.
+const TARGET_SPRITE_FRAMES = 48;
+function computeSpriteInterval(durationSec: number): number {
+    if (durationSec <= 0) return 0.25;
+    return Math.max(0.25, durationSec / TARGET_SPRITE_FRAMES);
 }
 
 function buildConversationSummary(messages: ChatMessage[]): string {
@@ -219,6 +229,7 @@ export function Inspector() {
                     sprite_interval_sec: spriteData.interval_sec,
                     total_frames: spriteData.total_frames,
                     sheets_count: spriteData.sheets.length,
+                    sprite_job_id: spriteData.sprite_job_id,
                     chat_history: buildChatHistory(nextMessages),
                     conversation_summary: buildConversationSummary(nextMessages),
                     trim_ranges: trimRanges,
@@ -282,7 +293,7 @@ export function Inspector() {
 
         const form = new FormData();
         form.append("file", sourceFile);
-        form.append("interval_sec", "0.25");
+        form.append("interval_sec", computeSpriteInterval(duration).toFixed(3));
         form.append("columns", "8");
         form.append("rows", "8");
         form.append("thumb_width", "256");
@@ -331,7 +342,7 @@ export function Inspector() {
 
         const form = new FormData();
         form.append("file", sourceFile);
-        form.append("interval_sec", "0.25");
+        form.append("interval_sec", computeSpriteInterval(duration).toFixed(3));
         form.append("columns", "8");
         form.append("rows", "8");
         form.append("thumb_width", "256");
