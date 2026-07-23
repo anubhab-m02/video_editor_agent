@@ -48,10 +48,10 @@ def test_token_estimate_rejects_invalid_duration():
     assert response.status_code == 422
 
 
-def test_suggest_cuts_fallback_explicit_range(monkeypatch):
+def test_agent_plan_fallback_explicit_range(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     response = client.post(
-        "/ai/suggest-cuts-from-sprites",
+        "/agent/plan",
         json={
             "prompt": "Cut from 4 to 5 seconds",
             "duration_sec": 20,
@@ -64,18 +64,21 @@ def test_suggest_cuts_fallback_explicit_range(monkeypatch):
     data = response.json()
     assert data["model"] == "fallback"
     assert data["strategy"] == "rule-based"
-    assert len(data["suggestions"]) >= 1
-    first = data["suggestions"][0]
+    assert data["plan_id"]
+    assert data["reasoning"]
+    assert len(data["proposals"]) >= 1
+    first = data["proposals"][0]
+    assert first["id"]
     assert first["action"] == "trim_video"
     assert first["operation"] == "remove_segment"
     assert first["start_sec"] == 4
     assert first["end_sec"] == 5
 
 
-def test_suggest_cuts_fallback_speed_range(monkeypatch):
+def test_agent_plan_fallback_speed_range(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     response = client.post(
-        "/ai/suggest-cuts-from-sprites",
+        "/agent/plan",
         json={
             "prompt": "Speed up 2x from 4 to 5 seconds",
             "duration_sec": 20,
@@ -86,8 +89,8 @@ def test_suggest_cuts_fallback_speed_range(monkeypatch):
     )
     assert response.status_code == 200
     data = response.json()
-    assert len(data["suggestions"]) >= 1
-    first = data["suggestions"][0]
+    assert len(data["proposals"]) >= 1
+    first = data["proposals"][0]
     assert first["action"] == "speed_video"
     assert first["operation"] == "apply_speed_range"
     assert first["start_sec"] == 4
@@ -95,23 +98,25 @@ def test_suggest_cuts_fallback_speed_range(monkeypatch):
     assert first["speed_multiplier"] == 2
 
 
-def test_suggest_cuts_accepts_context_fields(monkeypatch):
+def test_agent_plan_accepts_context_fields(monkeypatch):
     import app.main as main
 
     captured = {}
 
-    async def fake_suggest_cuts_from_sprites(**kwargs):
+    async def fake_plan_edits(**kwargs):
         captured.update(kwargs)
         return {
+            "plan_id": "fake-plan",
+            "reasoning": "test",
             "model": "fake",
             "strategy": "test",
-            "suggestions": [],
+            "proposals": [],
         }
 
-    monkeypatch.setattr(main, "suggest_cuts_from_sprites", fake_suggest_cuts_from_sprites)
+    monkeypatch.setattr(main, "plan_edits", fake_plan_edits)
 
     response = client.post(
-        "/ai/suggest-cuts-from-sprites",
+        "/agent/plan",
         json={
             "prompt": "Make intro faster",
             "duration_sec": 8,

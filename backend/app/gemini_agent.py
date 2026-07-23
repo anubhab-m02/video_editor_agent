@@ -8,10 +8,11 @@ import os
 import re
 from pathlib import Path
 from typing import Optional
+from uuid import uuid4
 
 import httpx
 
-from .validators import parse_time_like
+from .validators import parse_time_like, validate_trim
 
 logger = logging.getLogger(__name__)
 MAX_CONTEXT_TURNS = 10
@@ -19,6 +20,10 @@ MAX_SUMMARY_CHARS = 500
 # ponytail: fixed cap keeps the coarse vision pass's cost flat regardless of video
 # duration (ADR-0002/ADR-0006) — evenly subsample instead of sending every sheet.
 MAX_SPRITE_IMAGES = 6
+GEMINI_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    "gemini-2.0-flash:generateContent"
+)
 
 
 def _select_sprite_files(sprites_dir: Path, sprite_job_id: str, limit: int) -> list[Path]:
@@ -112,7 +117,66 @@ def _fallback_suggest_cuts(prompt: str, duration_sec: float) -> list[dict]:
     return []
 
 
-async def suggest_cuts_from_sprites(
+def _normalize_suggestions(raw_suggestions: list, duration_sec: float) -> list[dict]:
+    # ponytail: reuse validators.validate_trim as the single source of truth for
+    # range validity instead of re-deriving the same 0<=start<end<=duration check.
+    normalized: list[dict] = []
+    for item in raw_suggestions:
+        try:
+            start_sec = parse_time_like(item["start_sec"])
+            end_sec = parse_time_like(item["end_sec"])
+            validate_trim(start_sec, end_sec, duration_sec)
+        except Exception:
+            continue
+        action = str(item.get("action", "trim_video"))
+        if action not in {"trim_video", "speed_video"}:
+            action = "trim_video"
+        operation_default = "apply_speed_range" if action == "speed_video" else "remove_segment"
+        operation = str(item.get("operation", operation_default))
+        if operation not in {"remove_segment", "extract_range", "apply_speed_range"}:
+            operation = operation_default
+        confidence_raw = item.get("confidence", 0.5)
+        try:
+            confidence = float(confidence_raw)
+        except Exception:
+            confidence = 0.5
+        speed_multiplier = None
+        if action == "speed_video":
+            raw_multiplier = item.get("speed_multiplier", 2.0)
+            try:
+                speed_multiplier = float(raw_multiplier)
+            except Exception:
+                speed_multiplier = 2.0
+            speed_multiplier = max(0.25, min(16.0, speed_multiplier))
+        normalized.append(
+            {
+                "action": action,
+                "operation": operation,
+                "start_sec": round(start_sec, 3),
+                "end_sec": round(end_sec, 3),
+                "reason": str(item.get("reason", "Model suggestion")),
+                "confidence": max(0.0, min(1.0, confidence)),
+                "speed_multiplier": speed_multiplier,
+            }
+        )
+    return normalized
+
+
+async def _call_gemini(api_key: str, parts: list[dict]) -> dict:
+    payload = {
+        "contents": [{"parts": parts}],
+        "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
+    }
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(f"{GEMINI_URL}?key={api_key}", json=payload)
+        response.raise_for_status()
+        data = response.json()
+    text = data["candidates"][0]["content"]["parts"][0]["text"]
+    logger.info("GEMINI_RAW_PLAN_RESPONSE %s", text)
+    return _extract_json(text)
+
+
+async def plan_edits(
     *,
     prompt: str,
     duration_sec: float,
@@ -126,6 +190,10 @@ async def suggest_cuts_from_sprites(
     sprite_job_id: Optional[str] = None,
     sprites_dir: Optional[Path] = None,
 ) -> dict:
+    """Plan -> validate -> propose (ADR-0003). One bounded self-correction retry
+    if the model's first attempt yields zero valid proposals; falls back to the
+    regex heuristic only if that retry also fails."""
+    plan_id = str(uuid4())
     api_key = os.getenv("GEMINI_API_KEY")
     sprite_files: list[Path] = []
     if api_key and sprite_job_id and sprites_dir:
@@ -133,8 +201,9 @@ async def suggest_cuts_from_sprites(
             _select_sprite_files, sprites_dir, sprite_job_id, MAX_SPRITE_IMAGES
         )
     logger.info(
-        "SUGGEST_CUTS_REQUEST %s",
+        "PLAN_EDITS_REQUEST %s",
         {
+            "plan_id": plan_id,
             "duration_sec": duration_sec,
             "sprite_interval_sec": sprite_interval_sec,
             "total_frames": total_frames,
@@ -147,25 +216,24 @@ async def suggest_cuts_from_sprites(
         },
     )
     if not api_key:
-        fallback = {
+        fallback_suggestions = _fallback_suggest_cuts(prompt, duration_sec)
+        result = {
+            "plan_id": plan_id,
             "model": "fallback",
             "strategy": "rule-based",
-            "suggestions": _fallback_suggest_cuts(prompt, duration_sec),
+            "reasoning": "No Gemini API key configured; parsed the prompt with regex heuristics.",
+            "proposals": [{**item, "id": str(uuid4())} for item in fallback_suggestions],
         }
-        logger.info("SUGGEST_CUTS_FALLBACK_RESPONSE %s", fallback)
-        return fallback
-
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.0-flash:generateContent?key={api_key}"
-    )
+        logger.info("PLAN_EDITS_FALLBACK_RESPONSE %s", result)
+        return result
 
     instructions = (
         "You are an editing planner. Return strict JSON only.\n"
-        "Schema: {\"suggestions\":[{\"action\":\"trim_video|speed_video\",\"operation\":\"remove_segment|extract_range|apply_speed_range\",\"start_sec\":number,\"end_sec\":number,\"speed_multiplier\":number,\"reason\":string,\"confidence\":number}]}\n"
+        "Schema: {\"reasoning\":string,\"suggestions\":[{\"action\":\"trim_video|speed_video\",\"operation\":\"remove_segment|extract_range|apply_speed_range\",\"start_sec\":number,\"end_sec\":number,\"speed_multiplier\":number,\"reason\":string,\"confidence\":number}]}\n"
         f"Video duration: {duration_sec:.3f}s\n"
         f"Sprite analysis summary: interval={sprite_interval_sec}s, total_frames={total_frames}, sheets={sheets_count}\n"
         "Rules:\n"
+        "- reasoning is one short sentence summarizing your overall plan.\n"
         "- Produce 0 to 8 suggestions.\n"
         "- Each suggestion must satisfy 0 <= start_sec < end_sec <= duration.\n"
         "- Confidence range 0..1\n"
@@ -208,68 +276,48 @@ async def suggest_cuts_from_sprites(
         )
         parts.extend(await asyncio.to_thread(_encode_sprite_images, sprite_files))
 
-    payload = {
-        "contents": [{"parts": parts}],
-        "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
-    }
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(url, json=payload)
-        response.raise_for_status()
-        data = response.json()
-    text = data["candidates"][0]["content"]["parts"][0]["text"]
-    logger.info("GEMINI_RAW_SUGGEST_RESPONSE %s", text)
-    parsed = _extract_json(text)
+    strategy = "sprite-vision" if sprite_files else "sprite-summary-prompt"
+    parsed = await _call_gemini(api_key, parts)
     raw_suggestions = parsed.get("suggestions", [])
+    reasoning = str(parsed.get("reasoning") or "").strip()
+    normalized = _normalize_suggestions(raw_suggestions, duration_sec)
 
-    normalized: list[dict] = []
-    for item in raw_suggestions:
-        try:
-            start_sec = parse_time_like(item["start_sec"])
-            end_sec = parse_time_like(item["end_sec"])
-        except Exception:
-            continue
-        if not (0 <= start_sec < end_sec <= duration_sec):
-            continue
-        action = str(item.get("action", "trim_video"))
-        if action not in {"trim_video", "speed_video"}:
-            action = "trim_video"
-        operation_default = "apply_speed_range" if action == "speed_video" else "remove_segment"
-        operation = str(item.get("operation", operation_default))
-        if operation not in {"remove_segment", "extract_range", "apply_speed_range"}:
-            operation = operation_default
-        confidence_raw = item.get("confidence", 0.5)
-        try:
-            confidence = float(confidence_raw)
-        except Exception:
-            confidence = 0.5
-        speed_multiplier = None
-        if action == "speed_video":
-            raw_multiplier = item.get("speed_multiplier", 2.0)
-            try:
-                speed_multiplier = float(raw_multiplier)
-            except Exception:
-                speed_multiplier = 2.0
-            speed_multiplier = max(0.25, min(16.0, speed_multiplier))
-        normalized.append(
+    # Bounded self-correction: the model tried (produced suggestions) but every one
+    # was invalid — retry exactly once with the validation problem spelled out,
+    # rather than silently falling back to the much weaker regex heuristic.
+    if not normalized and raw_suggestions:
+        retry_parts = list(parts)
+        retry_parts.append(
             {
-                "action": action,
-                "operation": operation,
-                "start_sec": round(start_sec, 3),
-                "end_sec": round(end_sec, 3),
-                "reason": str(item.get("reason", "Model suggestion")),
-                "confidence": max(0.0, min(1.0, confidence)),
-                "speed_multiplier": speed_multiplier,
+                "text": (
+                    "Your previous suggestions were all invalid: every start_sec/end_sec must "
+                    f"satisfy 0 <= start_sec < end_sec <= {duration_sec:.3f}. Return corrected JSON "
+                    "with the same schema."
+                )
             }
         )
+        try:
+            retry_parsed = await _call_gemini(api_key, retry_parts)
+            raw_suggestions = retry_parsed.get("suggestions", [])
+            reasoning = str(retry_parsed.get("reasoning") or reasoning).strip()
+            normalized = _normalize_suggestions(raw_suggestions, duration_sec)
+        except Exception:
+            logger.exception("PLAN_EDITS_SELF_CORRECTION_FAILED")
 
     if not normalized:
         normalized = _fallback_suggest_cuts(prompt, duration_sec)
+        if not reasoning:
+            reasoning = "Model suggestions were invalid; fell back to regex heuristics."
+
+    if not reasoning:
+        reasoning = f"Proposed {len(normalized)} edit(s) based on the prompt and video context."
 
     result = {
+        "plan_id": plan_id,
         "model": "gemini-2.0-flash",
-        "strategy": "sprite-vision" if sprite_files else "sprite-summary-prompt",
-        "suggestions": normalized,
+        "strategy": strategy,
+        "reasoning": reasoning,
+        "proposals": [{**item, "id": str(uuid4())} for item in normalized],
     }
-    logger.info("SUGGEST_CUTS_NORMALIZED_RESPONSE %s", result)
+    logger.info("PLAN_EDITS_NORMALIZED_RESPONSE %s", result)
     return result

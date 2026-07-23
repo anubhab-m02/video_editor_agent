@@ -49,14 +49,14 @@ class _FakeResponse:
         return self._payload
 
 
-def _gemini_json_response(suggestions):
+def _gemini_json_response(suggestions, reasoning="test reasoning"):
     import json
 
-    text = json.dumps({"suggestions": suggestions})
+    text = json.dumps({"reasoning": reasoning, "suggestions": suggestions})
     return {"candidates": [{"content": {"parts": [{"text": text}]}}]}
 
 
-def test_suggest_cuts_attaches_sprite_images_when_available(tmp_path, monkeypatch):
+def test_plan_edits_attaches_sprite_images_when_available(tmp_path, monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
     sprites_dir = _make_sheets(tmp_path, "job3", 10)
 
@@ -82,7 +82,7 @@ def test_suggest_cuts_attaches_sprite_images_when_available(tmp_path, monkeypatc
     monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
 
     result = asyncio.run(
-        gemini_agent.suggest_cuts_from_sprites(
+        gemini_agent.plan_edits(
             prompt="find the boring part",
             duration_sec=20.0,
             sprite_interval_sec=1.0,
@@ -97,9 +97,12 @@ def test_suggest_cuts_attaches_sprite_images_when_available(tmp_path, monkeypatc
     image_parts = [p for p in parts if "inline_data" in p]
     assert len(image_parts) == 6
     assert result["strategy"] == "sprite-vision"
+    assert result["plan_id"]
+    assert result["reasoning"] == "test reasoning"
+    assert result["proposals"][0]["id"]
 
 
-def test_suggest_cuts_falls_back_to_text_only_without_sprite_job_id(monkeypatch):
+def test_plan_edits_falls_back_to_text_only_without_sprite_job_id(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
 
     captured = {}
@@ -111,7 +114,7 @@ def test_suggest_cuts_falls_back_to_text_only_without_sprite_job_id(monkeypatch)
     monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
 
     result = asyncio.run(
-        gemini_agent.suggest_cuts_from_sprites(
+        gemini_agent.plan_edits(
             prompt="find the boring part",
             duration_sec=20.0,
             sprite_interval_sec=1.0,
@@ -124,3 +127,69 @@ def test_suggest_cuts_falls_back_to_text_only_without_sprite_job_id(monkeypatch)
     image_parts = [p for p in parts if "inline_data" in p]
     assert len(image_parts) == 0
     assert result["strategy"] == "sprite-summary-prompt"
+
+
+def test_plan_edits_self_corrects_after_invalid_first_attempt(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+
+    call_count = {"n": 0}
+
+    async def fake_post(self, url, json=None):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # Out of range (end_sec > duration): every item should fail validation.
+            return _FakeResponse(
+                _gemini_json_response(
+                    [{"action": "trim_video", "start_sec": 1.0, "end_sec": 999.0, "reason": "bad", "confidence": 0.5}]
+                )
+            )
+        return _FakeResponse(
+            _gemini_json_response(
+                [{"action": "trim_video", "start_sec": 1.0, "end_sec": 2.0, "reason": "corrected", "confidence": 0.7}],
+                reasoning="corrected reasoning",
+            )
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    result = asyncio.run(
+        gemini_agent.plan_edits(
+            prompt="find the boring part",
+            duration_sec=20.0,
+            sprite_interval_sec=1.0,
+            total_frames=20,
+            sheets_count=1,
+        )
+    )
+
+    assert call_count["n"] == 2
+    assert len(result["proposals"]) == 1
+    assert result["proposals"][0]["reason"] == "corrected"
+    assert result["reasoning"] == "corrected reasoning"
+
+
+def test_plan_edits_falls_back_to_regex_if_retry_also_invalid(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+
+    async def fake_post(self, url, json=None):
+        return _FakeResponse(
+            _gemini_json_response(
+                [{"action": "trim_video", "start_sec": 1.0, "end_sec": 999.0, "reason": "bad", "confidence": 0.5}]
+            )
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    result = asyncio.run(
+        gemini_agent.plan_edits(
+            prompt="Cut from 4 to 5 seconds",
+            duration_sec=20.0,
+            sprite_interval_sec=1.0,
+            total_frames=20,
+            sheets_count=1,
+        )
+    )
+
+    assert len(result["proposals"]) >= 1
+    assert result["proposals"][0]["start_sec"] == 4
+    assert result["proposals"][0]["end_sec"] == 5
