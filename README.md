@@ -9,7 +9,7 @@ An intelligent, AI-assisted video editing platform that leverages Large Language
 - **🤖 AI-Powered Editing**: Communicate with your video via Google Gemini. Trimming, cutting, and speed adjustments are handled through natural language intent parsing.
 - **⏱️ Professional Timeline**: A high-fidelity, interactive timeline built with custom React components, offering multi-segment manipulation and frame-accurate seeking.
 - **🖼️ Intelligent Sprite Engine**: Low-latency video scrubbing powered by an automated sprite-sheet generation engine, optimizing for both performance and AI context.
-- **📉 AI Insight Engine**: Smart cut suggestions from prompt + timeline context, with sprite-sheet visual analysis in progress.
+- **📉 AI Insight Engine**: Smart cut suggestions from prompt + timeline context, backed by real sprite-sheet visual analysis sent to Gemini.
 - **⚡ High-Performance Backend**: A robust FastAPI backend integrated with FFmpeg for seamless, reliable, and multi-threaded video processing.
 
 ## 🛠️ Tech Stack
