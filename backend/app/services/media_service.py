@@ -21,6 +21,9 @@ async def save_upload_file(
     upload_dir: Path,
     max_file_size_mb: int | None = None,
 ) -> Path:
+    # ponytail: whole file buffered in memory, bounded by max_file_size_mb (500MB
+    # default). Fine at the ~15-20 min v1 ceiling (ADR-0006); switch to a streamed
+    # chunked write if the ceiling grows toward full long-form.
     body = await file.read()
     if max_file_size_mb is not None and len(body) > max_file_size_mb * 1024 * 1024:
         raise ValueError(f"File exceeds {max_file_size_mb} MB")

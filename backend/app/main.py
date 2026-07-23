@@ -53,7 +53,7 @@ if not logging.getLogger().handlers:
 logging.getLogger("app").setLevel(LOG_LEVEL)
 logging.getLogger("app.gemini_agent").setLevel(LOG_LEVEL)
 MEDIA_ROOT = (BACKEND_ROOT / os.getenv("MEDIA_ROOT", "media")).resolve()
-MAX_VIDEO_DURATION_SEC = float(os.getenv("MAX_VIDEO_DURATION_SEC", "10"))
+MAX_VIDEO_DURATION_SEC = float(os.getenv("MAX_VIDEO_DURATION_SEC", "1200"))  # 20 min, ADR-0006
 OUTPUT_TTL_MIN = float(os.getenv("OUTPUT_TTL_MIN", "60"))
 UPLOAD_DIR = MEDIA_ROOT / "uploads"
 OUTPUT_DIR = MEDIA_ROOT / "outputs"

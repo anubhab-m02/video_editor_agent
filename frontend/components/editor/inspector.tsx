@@ -75,9 +75,14 @@ const PLACEHOLDER_MESSAGES: ChatMessage[] = [
             "Hey! I can trim, cut, extract, and speed up sections. Upload a short video and iterate with me.",
     },
 ];
-const MAX_VIDEO_DURATION_SEC = 10;
+const MAX_VIDEO_DURATION_SEC = 1200; // 20 min, ADR-0006
 const MAX_CONTEXT_MESSAGES = 10;
 const RANGE_EPSILON_SEC = 0.03;
+
+function formatDurationLabel(totalSeconds: number): string {
+    const minutes = Math.round(totalSeconds / 60);
+    return minutes >= 1 ? `${minutes} min` : `${totalSeconds}s`;
+}
 
 function buildConversationSummary(messages: ChatMessage[]): string {
     const turns = messages.filter((m) => m.content.trim().length > 0);
@@ -178,7 +183,7 @@ export function Inspector() {
                 {
                     id: Date.now().toString(),
                     role: "assistant",
-                    content: `AI tools are limited to videos up to ${MAX_VIDEO_DURATION_SEC}s. Current video: ${durationLabel}.`,
+                    content: `AI tools are limited to videos up to ${formatDurationLabel(MAX_VIDEO_DURATION_SEC)}. Current video: ${durationLabel}.`,
                 },
             ]);
             return;
@@ -506,7 +511,7 @@ export function Inspector() {
                             background: "rgba(245,158,11,0.06)",
                         }}
                     >
-                        AI/Export is limited to {MAX_VIDEO_DURATION_SEC}s max. Current: {durationLabel}.
+                        AI/Export is limited to {formatDurationLabel(MAX_VIDEO_DURATION_SEC)} max. Current: {durationLabel}.
                     </p>
                 ) : null}
             </div>
