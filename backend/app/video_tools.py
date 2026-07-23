@@ -273,8 +273,7 @@ def apply_speed_multiplier(
     ]
 
     if has_audio_stream(input_path):
-        # v0 supports 1x and 2x only; one atempo stage is enough.
-        cmd.extend(["-filter:a", f"atempo={multiplier}", "-c:a", "aac"])
+        cmd.extend(["-filter:a", _build_atempo_chain(multiplier), "-c:a", "aac"])
 
     cmd.append(str(output_path))
     _run(cmd)
