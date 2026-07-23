@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+import base64
 import json
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Optional
 
 import httpx
@@ -13,6 +16,31 @@ from .validators import parse_time_like
 logger = logging.getLogger(__name__)
 MAX_CONTEXT_TURNS = 10
 MAX_SUMMARY_CHARS = 500
+# ponytail: fixed cap keeps the coarse vision pass's cost flat regardless of video
+# duration (ADR-0002/ADR-0006) — evenly subsample instead of sending every sheet.
+MAX_SPRITE_IMAGES = 6
+
+
+def _select_sprite_files(sprites_dir: Path, sprite_job_id: str, limit: int) -> list[Path]:
+    job_dir = sprites_dir / sprite_job_id
+    if not job_dir.is_dir():
+        return []
+    files = sorted(job_dir.glob("sheet_*.png"))
+    if len(files) <= limit:
+        return files
+    step = len(files) / limit
+    return [files[int(i * step)] for i in range(limit)]
+
+
+def _encode_sprite_images(files: list[Path]) -> list[dict]:
+    parts = []
+    for path in files:
+        try:
+            data = base64.b64encode(path.read_bytes()).decode("ascii")
+        except OSError:
+            continue
+        parts.append({"inline_data": {"mime_type": "image/png", "data": data}})
+    return parts
 
 
 def _extract_json(text: str) -> dict:
@@ -95,8 +123,15 @@ async def suggest_cuts_from_sprites(
     conversation_summary: Optional[str] = None,
     trim_ranges: Optional[list[dict]] = None,
     speed_ranges: Optional[list[dict]] = None,
+    sprite_job_id: Optional[str] = None,
+    sprites_dir: Optional[Path] = None,
 ) -> dict:
     api_key = os.getenv("GEMINI_API_KEY")
+    sprite_files: list[Path] = []
+    if api_key and sprite_job_id and sprites_dir:
+        sprite_files = await asyncio.to_thread(
+            _select_sprite_files, sprites_dir, sprite_job_id, MAX_SPRITE_IMAGES
+        )
     logger.info(
         "SUGGEST_CUTS_REQUEST %s",
         {
@@ -108,6 +143,7 @@ async def suggest_cuts_from_sprites(
             "chat_history_count": len(chat_history or []),
             "trim_ranges_count": len(trim_ranges or []),
             "speed_ranges_count": len(speed_ranges or []),
+            "sprite_images_attached": len(sprite_files),
         },
     )
     if not api_key:
@@ -162,8 +198,18 @@ async def suggest_cuts_from_sprites(
         f"Current timeline state: {json.dumps(current_state)}"
     )
 
+    text_part = f"{instructions}\n{context_block}\nUser prompt: {prompt}"
+    parts: list[dict] = [{"text": text_part}]
+    if sprite_files:
+        parts[0]["text"] += (
+            f"\nAttached: {len(sprite_files)} sprite-sheet thumbnail images, sampled evenly "
+            f"in chronological order across the full {duration_sec:.1f}s video. Use their visual "
+            "content (not just the metadata above) to find real cut points."
+        )
+        parts.extend(await asyncio.to_thread(_encode_sprite_images, sprite_files))
+
     payload = {
-        "contents": [{"parts": [{"text": f"{instructions}\n{context_block}\nUser prompt: {prompt}"}]}],
+        "contents": [{"parts": parts}],
         "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
     }
 
@@ -222,7 +268,7 @@ async def suggest_cuts_from_sprites(
 
     result = {
         "model": "gemini-2.0-flash",
-        "strategy": "sprite-summary-prompt",
+        "strategy": "sprite-vision" if sprite_files else "sprite-summary-prompt",
         "suggestions": normalized,
     }
     logger.info("SUGGEST_CUTS_NORMALIZED_RESPONSE %s", result)
