@@ -729,14 +729,14 @@ export function Inspector() {
                                                     unoptimized
                                                     className="w-full rounded border border-zinc-700"
                                                 />
-                                                <p className="text-[11px] text-zinc-500">
+                                                <p className="text-[11px] text-zinc-400">
                                                     Sheet {sheet.sheet_index}: {sheet.start_time_sec}s to {sheet.end_time_sec}s
                                                 </p>
                                             </div>
                                         ))}
                                 </div>
                             ) : (
-                                <p className="mt-2 text-[11px] text-zinc-500">
+                                <p className="mt-2 text-[11px] text-zinc-400">
                                     Sprite files are temporary and not persisted in this environment.
                                 </p>
                             )}
@@ -754,13 +754,13 @@ export function Inspector() {
                             <p className="text-xs font-semibold text-zinc-300">Token Comparison</p>
                             <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
                                 <div className="rounded border border-white/[0.06] bg-white/[0.03] p-2">
-                                    <p className="text-zinc-500">Direct Upload</p>
+                                    <p className="text-zinc-400">Direct Upload</p>
                                     <p className="font-mono text-zinc-100">
                                         {tokenEstimate.direct_video_tokens_est.toLocaleString()}
                                     </p>
                                 </div>
                                 <div className="rounded border border-white/[0.06] bg-white/[0.03] p-2">
-                                    <p className="text-zinc-500">Sprite Sheets</p>
+                                    <p className="text-zinc-400">Sprite Sheets</p>
                                     <p className="font-mono text-zinc-100">
                                         {tokenEstimate.sprite_tokens_est.toLocaleString()}
                                     </p>
@@ -856,11 +856,11 @@ export function Inspector() {
                                                         </button>
                                                     </>
                                                 ) : (
-                                                    <span className="text-[10px] text-zinc-500">Rejected</span>
+                                                    <span className="text-[10px] text-zinc-400">Rejected</span>
                                                 )}
                                             </div>
                                         </div>
-                                        <p className="mt-0.5 text-zinc-500">{p.reason}</p>
+                                        <p className="mt-0.5 text-zinc-400">{p.reason}</p>
                                     </div>
                                 ))}
                             </div>
@@ -934,9 +934,9 @@ export function Inspector() {
                         <Send className="h-3.5 w-3.5" />
                     </Button>
                 </div>
-                <div className="mt-2 flex items-center justify-center gap-1.5 text-[11px] text-zinc-600">
+                <div className="mt-2 flex items-center justify-center gap-1.5 text-[11px] text-zinc-400">
                     <span>Try: &quot;Trim from 00:12 to 00:47&quot;</span>
-                    <kbd className="rounded border border-white/[0.06] bg-white/[0.03] px-1 py-px font-mono text-[10px] leading-none text-zinc-500">⏎</kbd>
+                    <kbd className="rounded border border-white/[0.06] bg-white/[0.03] px-1 py-px font-mono text-[10px] leading-none text-zinc-400">⏎</kbd>
                 </div>
             </div>
         </div>

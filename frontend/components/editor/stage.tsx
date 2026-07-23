@@ -128,7 +128,7 @@ export function Stage() {
                             <p className="text-sm font-medium text-zinc-300">
                                 {isDragOver ? "Drop to upload" : "Drop your video here"}
                             </p>
-                            <p className="mt-1 text-xs text-zinc-500">
+                            <p className="mt-1 text-xs text-zinc-400">
                                 or click to browse files
                             </p>
                         </div>

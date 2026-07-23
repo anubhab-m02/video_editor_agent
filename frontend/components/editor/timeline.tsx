@@ -702,7 +702,7 @@ export function Timeline() {
                                 <TooltipContent side="bottom" className="bg-zinc-800 text-zinc-200">
                                     <span>{item.label}</span>
                                     {item.shortcut && (
-                                        <span className="ml-2 text-zinc-500">{item.shortcut}</span>
+                                        <span className="ml-2 text-zinc-400">{item.shortcut}</span>
                                     )}
                                 </TooltipContent>
                             </Tooltip>
@@ -710,7 +710,7 @@ export function Timeline() {
                     ))}
 
                     {/* Zoom indicator */}
-                    <div className="ml-auto font-mono text-[11px] text-zinc-500">
+                    <div className="ml-auto font-mono text-[11px] text-zinc-400">
                         {Math.round(zoom * 100)}%
                     </div>
                 </div>
