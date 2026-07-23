@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
@@ -53,6 +54,7 @@ logging.getLogger("app").setLevel(LOG_LEVEL)
 logging.getLogger("app.gemini_agent").setLevel(LOG_LEVEL)
 MEDIA_ROOT = (BACKEND_ROOT / os.getenv("MEDIA_ROOT", "media")).resolve()
 MAX_VIDEO_DURATION_SEC = float(os.getenv("MAX_VIDEO_DURATION_SEC", "10"))
+OUTPUT_TTL_MIN = float(os.getenv("OUTPUT_TTL_MIN", "60"))
 UPLOAD_DIR = MEDIA_ROOT / "uploads"
 OUTPUT_DIR = MEDIA_ROOT / "outputs"
 SPRITES_DIR = MEDIA_ROOT / "sprites"
@@ -74,6 +76,20 @@ def _allowed_origins() -> list[str]:
     if vercel_frontend_url:
         origins.add(vercel_frontend_url)
     return sorted(origins)
+
+
+def _sweep_old_outputs() -> None:
+    # ponytail: opportunistic sweep-on-export, not a background timer — survives
+    # the scale-to-zero host since it only runs when a request is actually in flight.
+    if OUTPUT_TTL_MIN <= 0:
+        return
+    cutoff = time.time() - OUTPUT_TTL_MIN * 60
+    for path in OUTPUT_DIR.glob("*"):
+        try:
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+        except OSError:
+            continue
 
 
 def _enforce_max_duration(duration_sec: float) -> None:
@@ -356,6 +372,7 @@ async def export_from_file(
     speed_factor: Optional[float] = Form(default=None),
     speed: Optional[str] = Form(default=None),
 ) -> ExportResponse:
+    await asyncio.to_thread(_sweep_old_outputs)
     max_mb = int(os.getenv("MAX_FILE_SIZE_MB", "500"))
     try:
         input_path = await save_upload_file(

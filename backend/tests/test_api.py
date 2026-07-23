@@ -1,5 +1,7 @@
 from pathlib import Path
+import os
 import sys
+import time
 
 from fastapi.testclient import TestClient
 
@@ -282,5 +284,41 @@ def test_api_key_not_required_when_unset(monkeypatch):
 
     response = client.post("/analyze/token-estimate", json={"duration_sec": 10})
     assert response.status_code == 200
+
+
+def test_sweep_old_outputs_deletes_stale_files_only(tmp_path, monkeypatch):
+    import app.main as main
+
+    monkeypatch.setattr(main, "OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr(main, "OUTPUT_TTL_MIN", 60.0)
+
+    old_file = tmp_path / "old.mp4"
+    old_file.write_bytes(b"x")
+    old_time = time.time() - 3600
+    os.utime(old_file, (old_time, old_time))
+
+    new_file = tmp_path / "new.mp4"
+    new_file.write_bytes(b"x")
+
+    main._sweep_old_outputs()
+
+    assert not old_file.exists()
+    assert new_file.exists()
+
+
+def test_sweep_old_outputs_disabled_when_ttl_zero(tmp_path, monkeypatch):
+    import app.main as main
+
+    monkeypatch.setattr(main, "OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr(main, "OUTPUT_TTL_MIN", 0)
+
+    old_file = tmp_path / "old.mp4"
+    old_file.write_bytes(b"x")
+    old_time = time.time() - 3600
+    os.utime(old_file, (old_time, old_time))
+
+    main._sweep_old_outputs()
+
+    assert old_file.exists()
 
 
