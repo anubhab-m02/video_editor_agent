@@ -16,11 +16,11 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 
-from .gemini_agent import suggest_cuts_from_sprites
+from .gemini_agent import plan_edits
 from .schemas import (
+    AgentPlanRequest,
+    AgentPlanResponse,
     ExportResponse,
-    SuggestCutsRequest,
-    SuggestCutsResponse,
     SpriteAnalysisResponse,
     TokenEstimateRequest,
     TokenEstimateResponse,
@@ -340,10 +340,10 @@ async def analyze_token_estimate_from_file(
         save_path.unlink(missing_ok=True)
 
 
-@app.post("/ai/suggest-cuts-from-sprites", response_model=SuggestCutsResponse)
-async def ai_suggest_cuts_from_sprites(payload: SuggestCutsRequest) -> SuggestCutsResponse:
+@app.post("/agent/plan", response_model=AgentPlanResponse)
+async def agent_plan(payload: AgentPlanRequest) -> AgentPlanResponse:
     try:
-        result = await suggest_cuts_from_sprites(
+        result = await plan_edits(
             prompt=payload.prompt,
             duration_sec=payload.duration_sec,
             sprite_interval_sec=payload.sprite_interval_sec,
@@ -359,8 +359,10 @@ async def ai_suggest_cuts_from_sprites(payload: SuggestCutsRequest) -> SuggestCu
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    return SuggestCutsResponse(
-        suggestions=result["suggestions"],
+    return AgentPlanResponse(
+        plan_id=result["plan_id"],
+        reasoning=result["reasoning"],
+        proposals=result["proposals"],
         model=result["model"],
         strategy=result["strategy"],
     )

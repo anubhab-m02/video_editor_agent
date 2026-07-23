@@ -70,7 +70,7 @@ Visit `http://localhost:3000` to start editing.
 ## 🧬 API Highlights
 
 - `POST /analyze/sprites`: Generates tile-based previews for the UI scrubber.
-- `POST /ai/suggest-cuts-from-sprites`: Returns AI-driven timestamp suggestions based on user goals and video metadata.
+- `POST /agent/plan`: Plans edits from a prompt + video context, returning reviewable proposals (accept/reject before anything applies).
 - `POST /export/from-file`: Applies trim/speed ranges and renders the final export.
 
 ---

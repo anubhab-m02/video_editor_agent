@@ -47,6 +47,7 @@ type TokenEstimateResponse = {
 };
 
 type CutSuggestion = {
+    id: string;
     action: "trim_video" | "speed_video";
     operation: "remove_segment" | "extract_range" | "apply_speed_range";
     start_sec: number;
@@ -56,14 +57,16 @@ type CutSuggestion = {
     speed_multiplier?: number | null;
 };
 
-type SuggestCutsResponse = {
-    suggestions: CutSuggestion[];
+type AgentPlanResponse = {
+    plan_id: string;
+    reasoning: string;
+    proposals: CutSuggestion[];
     model: string;
     strategy: string;
 };
 
 type ProposalStatus = "pending" | "accepted" | "rejected";
-type Proposal = CutSuggestion & { id: string; status: ProposalStatus };
+type Proposal = CutSuggestion & { status: ProposalStatus };
 
 type ExportResponse = {
     output_url: string;
@@ -308,7 +311,7 @@ export function Inspector() {
 
         setIsSuggesting(true);
         try {
-            const response = await fetch("/api/ai/suggest-cuts-from-sprites", {
+            const response = await fetch("/api/agent/plan", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -324,17 +327,16 @@ export function Inspector() {
                     speed_ranges: speedRanges,
                 }),
             });
-            const data = (await response.json()) as SuggestCutsResponse | { detail?: string };
+            const data = (await response.json()) as AgentPlanResponse | { detail?: string };
             if (!response.ok) {
                 const message = "detail" in data ? data.detail : undefined;
-                throw new Error(message || "Failed to suggest edits.");
+                throw new Error(message || "Failed to plan edits.");
             }
-            const result = data as SuggestCutsResponse;
-            // Preview-before-apply: new suggestions arrive as pending proposals only.
+            const result = data as AgentPlanResponse;
+            // Preview-before-apply: the plan's proposals arrive pending only.
             // Nothing touches the timeline until the user accepts (PRD P0-2).
-            const nextProposals: Proposal[] = result.suggestions.map((s) => ({
+            const nextProposals: Proposal[] = result.proposals.map((s) => ({
                 ...s,
-                id: crypto.randomUUID(),
                 status: "pending",
             }));
             setProposals((prev) => [...prev, ...nextProposals]);
@@ -343,7 +345,7 @@ export function Inspector() {
                 {
                     id: (Date.now() + 1).toString(),
                     role: "assistant",
-                    content: `${nextProposals.length} proposal(s) ready for review via ${result.model} (${result.strategy}).`,
+                    content: `${result.reasoning} (${result.model}, ${result.strategy})`,
                 },
             ]);
         } catch (error) {

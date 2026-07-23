@@ -51,6 +51,7 @@ class TokenEstimateResponse(BaseModel):
 
 
 class EditSuggestion(BaseModel):
+    id: str
     action: Literal["trim_video", "speed_video"] = "trim_video"
     operation: Literal["remove_segment", "extract_range", "apply_speed_range"] = "remove_segment"
     start_sec: float
@@ -76,7 +77,7 @@ class TrimRange(BaseModel):
     end: float
 
 
-class SuggestCutsRequest(BaseModel):
+class AgentPlanRequest(BaseModel):
     prompt: str = Field(min_length=1)
     duration_sec: float = Field(gt=0)
     sprite_interval_sec: float = Field(gt=0)
@@ -89,8 +90,10 @@ class SuggestCutsRequest(BaseModel):
     speed_ranges: list[SpeedRangeInput] = Field(default_factory=list)
 
 
-class SuggestCutsResponse(BaseModel):
-    suggestions: list[EditSuggestion]
+class AgentPlanResponse(BaseModel):
+    plan_id: str
+    reasoning: str
+    proposals: list[EditSuggestion]
     model: str
     strategy: str
 
