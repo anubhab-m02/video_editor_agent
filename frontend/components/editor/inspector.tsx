@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { useVideo } from "./video-context";
+import { fingerprintsMatch, type FileFingerprint } from "./video-store";
 
 type ChatMessage = {
     id: string;
@@ -84,6 +85,19 @@ const PLACEHOLDER_MESSAGES: ChatMessage[] = [
 ];
 const MAX_VIDEO_DURATION_SEC = 1200; // 20 min, ADR-0006
 const MAX_CONTEXT_MESSAGES = 10;
+const CHAT_STORAGE_KEY = "video-editor-chat-session";
+
+type StoredChatSession = { fingerprint: FileFingerprint; messages: ChatMessage[] };
+
+function loadStoredChat(): StoredChatSession | null {
+    if (typeof window === "undefined") return null;
+    try {
+        const raw = window.localStorage.getItem(CHAT_STORAGE_KEY);
+        return raw ? (JSON.parse(raw) as StoredChatSession) : null;
+    } catch {
+        return null;
+    }
+}
 const RANGE_EPSILON_SEC = 0.03;
 
 function formatDurationLabel(totalSeconds: number): string {
@@ -275,6 +289,37 @@ export function Inspector() {
         el.style.height = "auto";
         el.style.height = `${el.scrollHeight}px`;
     }, [input]);
+
+    // Session persistence (PRD P1-2): restore chat only when the same file is
+    // re-loaded (e.g. after a refresh); a different file always starts fresh,
+    // matching the store's trimRanges/speedRanges restore behavior.
+    useEffect(() => {
+        if (!sourceFile) return;
+        const fingerprint: FileFingerprint = {
+            name: sourceFile.name,
+            size: sourceFile.size,
+            lastModified: sourceFile.lastModified,
+        };
+        const stored = loadStoredChat();
+        setMessages(
+            stored && fingerprintsMatch(stored.fingerprint, fingerprint) ? stored.messages : PLACEHOLDER_MESSAGES
+        );
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sourceFile]);
+
+    useEffect(() => {
+        if (!sourceFile || typeof window === "undefined") return;
+        const fingerprint: FileFingerprint = {
+            name: sourceFile.name,
+            size: sourceFile.size,
+            lastModified: sourceFile.lastModified,
+        };
+        try {
+            window.localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify({ fingerprint, messages }));
+        } catch {
+            // Best-effort — localStorage may be unavailable or full.
+        }
+    }, [messages, sourceFile]);
 
     async function handleSend() {
         if (!input.trim()) return;

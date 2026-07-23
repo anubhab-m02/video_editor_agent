@@ -13,7 +13,7 @@ function resetStore() {
   state.setIsPlaying(false);
   state.setTrimRanges([]);
   state.videoRef.current = null;
-  useVideoStore.setState({ undoStack: [], redoStack: [] });
+  useVideoStore.setState({ undoStack: [], redoStack: [], lastFileFingerprint: null });
 }
 
 describe("video-store", () => {
@@ -179,5 +179,44 @@ describe("video-store", () => {
 
     expect(useVideoStore.getState().undoStack).toEqual([]);
     expect(useVideoStore.getState().redoStack).toEqual([]);
+  });
+
+  it("re-loading the same file (matching name/size/lastModified) restores persisted ranges", () => {
+    resetStore();
+    const state = useVideoStore.getState();
+    const file = new File([new Blob(["x".repeat(10)])], "clip.mp4", {
+      type: "video/mp4",
+      lastModified: 123456,
+    });
+    state.loadFile(file);
+    useVideoStore.getState().setTrimRanges([{ start: 1, end: 3 }]);
+
+    // Simulate a page refresh: same File re-selected, same identity fields.
+    const sameFileAgain = new File([new Blob(["x".repeat(10)])], "clip.mp4", {
+      type: "video/mp4",
+      lastModified: 123456,
+    });
+    useVideoStore.getState().loadFile(sameFileAgain);
+
+    expect(useVideoStore.getState().trimRanges).toEqual([{ start: 1, end: 3 }]);
+  });
+
+  it("loading a different file does not inherit the previous file's ranges", () => {
+    resetStore();
+    const state = useVideoStore.getState();
+    const file = new File([new Blob(["x".repeat(10)])], "clip.mp4", {
+      type: "video/mp4",
+      lastModified: 123456,
+    });
+    state.loadFile(file);
+    useVideoStore.getState().setTrimRanges([{ start: 1, end: 3 }]);
+
+    const otherFile = new File([new Blob(["y".repeat(20)])], "other.mp4", {
+      type: "video/mp4",
+      lastModified: 999,
+    });
+    useVideoStore.getState().loadFile(otherFile);
+
+    expect(useVideoStore.getState().trimRanges).toEqual([]);
   });
 });

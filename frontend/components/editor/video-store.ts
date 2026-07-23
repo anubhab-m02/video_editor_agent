@@ -2,11 +2,17 @@
 
 import type React from "react";
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
 
 export type TrimRange = { start: number; end: number };
 export type SpeedRange = { start: number; end: number; speed: number };
+export type FileFingerprint = { name: string; size: number; lastModified: number };
 
 type EditSnapshot = { trimRanges: TrimRange[]; speedRanges: SpeedRange[] };
+
+export function fingerprintsMatch(a: FileFingerprint | null, b: FileFingerprint): boolean {
+  return a !== null && a.name === b.name && a.size === b.size && a.lastModified === b.lastModified;
+}
 
 export interface VideoStoreState {
   videoSrc: string | null;
@@ -24,6 +30,7 @@ export interface VideoStoreState {
   hasVideo: boolean;
   undoStack: EditSnapshot[];
   redoStack: EditSnapshot[];
+  lastFileFingerprint: FileFingerprint | null;
 }
 
 export interface VideoStoreActions {
@@ -147,7 +154,9 @@ function makeClamp(duration: number) {
 
 const videoRef = { current: null } as React.RefObject<HTMLVideoElement | null>;
 
-export const useVideoStore = create<VideoStore>((set, get) => ({
+export const useVideoStore = create<VideoStore>()(
+  persist(
+    (set, get) => ({
   videoSrc: null,
   sourceFile: null,
   videoRef,
@@ -163,12 +172,24 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
   hasVideo: false,
   undoStack: [],
   redoStack: [],
+  lastFileFingerprint: null,
 
   loadFile: (file) => {
     if (!ACCEPTED_TYPES.includes(file.type)) return;
     const prev = get().videoSrc;
     if (prev) URL.revokeObjectURL(prev);
     const src = URL.createObjectURL(file);
+    const fingerprint: FileFingerprint = {
+      name: file.name,
+      size: file.size,
+      lastModified: file.lastModified,
+    };
+    // Same file re-loaded (e.g. after a refresh) -> restore persisted edits.
+    // A different/new file always starts clean.
+    const state = get();
+    const isSameFile = fingerprintsMatch(state.lastFileFingerprint, fingerprint);
+    const trimRanges = isSameFile ? state.trimRanges : [];
+    const speedRanges = isSameFile ? state.speedRanges : [];
     set({
       videoSrc: src,
       sourceFile: file,
@@ -176,12 +197,13 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
       isPlaying: false,
       currentTime: 0,
       duration: 0,
-      trimStart: 0,
-      trimEnd: 0,
-      trimRanges: [],
-      speedRanges: [],
+      trimStart: trimRanges[0]?.start ?? 0,
+      trimEnd: trimRanges[0]?.end ?? 0,
+      trimRanges,
+      speedRanges,
       undoStack: [],
       redoStack: [],
+      lastFileFingerprint: fingerprint,
     });
   },
 
@@ -372,4 +394,14 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
       redoStack: state.redoStack.slice(0, -1),
     });
   },
-}));
+    }),
+    {
+      name: "video-editor-session",
+      partialize: (state) => ({
+        trimRanges: state.trimRanges,
+        speedRanges: state.speedRanges,
+        lastFileFingerprint: state.lastFileFingerprint,
+      }),
+    }
+  )
+);
