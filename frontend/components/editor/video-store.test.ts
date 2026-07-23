@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { useVideoStore } from "./video-store";
+
+// jsdom doesn't implement these; loadFile() needs them.
+URL.createObjectURL = vi.fn(() => "blob:mock");
+URL.revokeObjectURL = vi.fn();
 
 function resetStore() {
   const state = useVideoStore.getState();
@@ -9,6 +13,7 @@ function resetStore() {
   state.setIsPlaying(false);
   state.setTrimRanges([]);
   state.videoRef.current = null;
+  useVideoStore.setState({ undoStack: [], redoStack: [] });
 }
 
 describe("video-store", () => {
@@ -114,5 +119,65 @@ describe("video-store", () => {
       { start: 2, end: 3, speed: 2 },
       { start: 7, end: 8, speed: 2 },
     ]);
+  });
+
+  it("undo reverts the last trim change and redo reapplies it", () => {
+    resetStore();
+    const state = useVideoStore.getState();
+    state.setTrimRanges([{ start: 1, end: 3 }]);
+    state.setTrimRanges([{ start: 1, end: 3 }, { start: 5, end: 6 }]);
+
+    state.undo();
+    expect(useVideoStore.getState().trimRanges).toEqual([{ start: 1, end: 3 }]);
+
+    state.undo();
+    expect(useVideoStore.getState().trimRanges).toEqual([]);
+
+    state.redo();
+    expect(useVideoStore.getState().trimRanges).toEqual([{ start: 1, end: 3 }]);
+
+    state.redo();
+    expect(useVideoStore.getState().trimRanges).toEqual([{ start: 1, end: 3 }, { start: 5, end: 6 }]);
+  });
+
+  it("undo is a no-op with an empty history stack", () => {
+    resetStore();
+    const state = useVideoStore.getState();
+    state.undo();
+    expect(useVideoStore.getState().trimRanges).toEqual([]);
+  });
+
+  it("a new edit after undo clears the redo stack", () => {
+    resetStore();
+    const state = useVideoStore.getState();
+    state.setTrimRanges([{ start: 1, end: 3 }]);
+    state.undo();
+    expect(useVideoStore.getState().redoStack).toHaveLength(1);
+
+    state.setTrimRanges([{ start: 2, end: 4 }]);
+    expect(useVideoStore.getState().redoStack).toHaveLength(0);
+  });
+
+  it("does not push history for a no-op write of identical ranges", () => {
+    resetStore();
+    const state = useVideoStore.getState();
+    state.setTrimRanges([{ start: 1, end: 3 }]);
+    const historyDepth = useVideoStore.getState().undoStack.length;
+
+    state.setTrimRanges([{ start: 1, end: 3 }]);
+    expect(useVideoStore.getState().undoStack).toHaveLength(historyDepth);
+  });
+
+  it("loadFile resets the undo/redo stacks", () => {
+    resetStore();
+    const state = useVideoStore.getState();
+    state.setTrimRanges([{ start: 1, end: 3 }]);
+    expect(useVideoStore.getState().undoStack.length).toBeGreaterThan(0);
+
+    const file = new File([new Blob()], "clip.mp4", { type: "video/mp4" });
+    state.loadFile(file);
+
+    expect(useVideoStore.getState().undoStack).toEqual([]);
+    expect(useVideoStore.getState().redoStack).toEqual([]);
   });
 });

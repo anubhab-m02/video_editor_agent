@@ -6,6 +6,8 @@ import { create } from "zustand";
 export type TrimRange = { start: number; end: number };
 export type SpeedRange = { start: number; end: number; speed: number };
 
+type EditSnapshot = { trimRanges: TrimRange[]; speedRanges: SpeedRange[] };
+
 export interface VideoStoreState {
   videoSrc: string | null;
   sourceFile: File | null;
@@ -20,6 +22,8 @@ export interface VideoStoreState {
   trimRanges: TrimRange[];
   speedRanges: SpeedRange[];
   hasVideo: boolean;
+  undoStack: EditSnapshot[];
+  redoStack: EditSnapshot[];
 }
 
 export interface VideoStoreActions {
@@ -39,6 +43,8 @@ export interface VideoStoreActions {
   setCurrentTime: (time: number) => void;
   setDuration: (duration: number) => void;
   setIsPlaying: (isPlaying: boolean) => void;
+  undo: () => void;
+  redo: () => void;
 }
 
 export type VideoStore = VideoStoreState & VideoStoreActions;
@@ -48,6 +54,14 @@ const EXIT_EPSILON_SEC = 0.02;
 const MIN_TRIM_DURATION_SEC = 0.05;
 const MIN_SPEED_DURATION_SEC = 0.1;
 const DEFAULT_SPEED = 2;
+const MAX_HISTORY = 50;
+
+function snapshotEquals(a: EditSnapshot, trimRanges: TrimRange[], speedRanges: SpeedRange[]): boolean {
+  return (
+    JSON.stringify(a.trimRanges) === JSON.stringify(trimRanges) &&
+    JSON.stringify(a.speedRanges) === JSON.stringify(speedRanges)
+  );
+}
 
 function normalizeTrimRanges(
   ranges: TrimRange[],
@@ -147,6 +161,8 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
   trimRanges: [],
   speedRanges: [],
   hasVideo: false,
+  undoStack: [],
+  redoStack: [],
 
   loadFile: (file) => {
     if (!ACCEPTED_TYPES.includes(file.type)) return;
@@ -164,6 +180,8 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
       trimEnd: 0,
       trimRanges: [],
       speedRanges: [],
+      undoStack: [],
+      redoStack: [],
     });
   },
 
@@ -245,8 +263,12 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
     const clamp = makeClamp(state.duration);
     const normalized = normalizeTrimRanges([{ start, end }], clamp);
     const prunedSpeed = subtractRanges(state.speedRanges, normalized, MIN_SPEED_DURATION_SEC);
+    const before: EditSnapshot = { trimRanges: state.trimRanges, speedRanges: state.speedRanges };
+    const history = snapshotEquals(before, normalized, prunedSpeed)
+      ? {}
+      : { undoStack: [...state.undoStack, before].slice(-MAX_HISTORY), redoStack: [] };
     if (normalized.length === 0) {
-      set({ trimStart: 0, trimEnd: 0, trimRanges: [], speedRanges: prunedSpeed });
+      set({ trimStart: 0, trimEnd: 0, trimRanges: [], speedRanges: prunedSpeed, ...history });
       return;
     }
     set({
@@ -254,6 +276,7 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
       trimEnd: normalized[0].end,
       trimRanges: normalized,
       speedRanges: prunedSpeed,
+      ...history,
     });
   },
 
@@ -263,8 +286,12 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
     const normalized = normalizeTrimRanges(ranges, clamp);
     // Prune speed ranges that overlap with newly-set trim ranges
     const prunedSpeed = subtractRanges(state.speedRanges, normalized, MIN_SPEED_DURATION_SEC);
+    const before: EditSnapshot = { trimRanges: state.trimRanges, speedRanges: state.speedRanges };
+    const history = snapshotEquals(before, normalized, prunedSpeed)
+      ? {}
+      : { undoStack: [...state.undoStack, before].slice(-MAX_HISTORY), redoStack: [] };
     if (normalized.length === 0) {
-      set({ trimStart: 0, trimEnd: 0, trimRanges: [], speedRanges: prunedSpeed });
+      set({ trimStart: 0, trimEnd: 0, trimRanges: [], speedRanges: prunedSpeed, ...history });
       return;
     }
     set({
@@ -272,6 +299,7 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
       trimEnd: normalized[0].end,
       trimRanges: normalized,
       speedRanges: prunedSpeed,
+      ...history,
     });
   },
 
@@ -301,12 +329,47 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
     const normalized = normalizeSpeedRanges(ranges, clamp);
     // Trim has higher priority than speed; clip speed around trimmed gaps.
     const prunedSpeed = subtractRanges(normalized, state.trimRanges, MIN_SPEED_DURATION_SEC);
+    const before: EditSnapshot = { trimRanges: state.trimRanges, speedRanges: state.speedRanges };
+    const history = snapshotEquals(before, state.trimRanges, prunedSpeed)
+      ? {}
+      : { undoStack: [...state.undoStack, before].slice(-MAX_HISTORY), redoStack: [] };
     set({
       speedRanges: prunedSpeed,
+      ...history,
     });
   },
 
   setCurrentTime: (time) => set({ currentTime: time }),
   setDuration: (duration) => set({ duration }),
   setIsPlaying: (isPlaying) => set({ isPlaying }),
+
+  undo: () => {
+    const state = get();
+    if (state.undoStack.length === 0) return;
+    const previous = state.undoStack[state.undoStack.length - 1];
+    const current: EditSnapshot = { trimRanges: state.trimRanges, speedRanges: state.speedRanges };
+    set({
+      trimRanges: previous.trimRanges,
+      speedRanges: previous.speedRanges,
+      trimStart: previous.trimRanges[0]?.start ?? 0,
+      trimEnd: previous.trimRanges[0]?.end ?? 0,
+      undoStack: state.undoStack.slice(0, -1),
+      redoStack: [...state.redoStack, current].slice(-MAX_HISTORY),
+    });
+  },
+
+  redo: () => {
+    const state = get();
+    if (state.redoStack.length === 0) return;
+    const next = state.redoStack[state.redoStack.length - 1];
+    const current: EditSnapshot = { trimRanges: state.trimRanges, speedRanges: state.speedRanges };
+    set({
+      trimRanges: next.trimRanges,
+      speedRanges: next.speedRanges,
+      trimStart: next.trimRanges[0]?.start ?? 0,
+      trimEnd: next.trimRanges[0]?.end ?? 0,
+      undoStack: [...state.undoStack, current].slice(-MAX_HISTORY),
+      redoStack: state.redoStack.slice(0, -1),
+    });
+  },
 }));

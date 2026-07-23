@@ -9,6 +9,8 @@ import {
     Trash2,
     RotateCcw,
     FastForward,
+    Undo2,
+    Redo2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -26,6 +28,8 @@ const TOOLBAR_ITEMS = [
     { icon: ZoomOut, label: "Zoom out", shortcut: "-" },
     { icon: Scissors, label: "Trim", shortcut: "T" },
     { icon: Trash2, label: "Delete", shortcut: "⌫" },
+    { icon: Undo2, label: "Undo", shortcut: "⌘Z" },
+    { icon: Redo2, label: "Redo", shortcut: "⌘⇧Z" },
     { icon: RotateCcw, label: "Reset timeline", shortcut: "" },
 ] as const;
 
@@ -122,6 +126,8 @@ export function Timeline() {
         seek,
         setTrimRanges,
         setSpeedRanges,
+        undo,
+        redo,
     } = useVideo();
 
     const [zoom, setZoom] = useState(1);
@@ -515,6 +521,12 @@ export function Timeline() {
                 }
                 break;
             }
+            case "Undo":
+                undo();
+                break;
+            case "Redo":
+                redo();
+                break;
             case "Reset timeline":
                 setZoom(1);
                 setTrimWidgets([]);
@@ -547,6 +559,15 @@ export function Timeline() {
             if (!hasVideo || isTypingTarget(e.target)) return;
 
             const key = e.key.toLowerCase();
+            if ((e.metaKey || e.ctrlKey) && key === "z") {
+                e.preventDefault();
+                if (e.shiftKey) {
+                    redo();
+                } else {
+                    undo();
+                }
+                return;
+            }
             if (key === "a") {
                 e.preventDefault();
                 toolbarActionRef.current("Add segment");
@@ -575,7 +596,7 @@ export function Timeline() {
 
         window.addEventListener("keydown", onKeyDown);
         return () => window.removeEventListener("keydown", onKeyDown);
-    }, [hasVideo]);
+    }, [hasVideo, undo, redo]);
 
     return (
         <TooltipProvider delayDuration={200}>
