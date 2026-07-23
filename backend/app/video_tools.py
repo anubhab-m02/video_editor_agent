@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 import math
@@ -11,6 +12,14 @@ def _run(cmd: list[str]) -> str:
     if result.returncode != 0:
         raise RuntimeError(result.stderr or result.stdout)
     return result.stdout
+
+
+def _run_capture_stderr(cmd: list[str]) -> str:
+    # ffmpeg log filters (e.g. silencedetect) write to stderr, not stdout.
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr or result.stdout)
+    return result.stderr
 
 
 def get_duration_sec(input_path: Path) -> float:
@@ -374,3 +383,32 @@ def generate_sprite_sheets(
         "total_frames": total_frames,
         "sheets": sheets,
     }
+
+
+def detect_silence(
+    input_path: Path,
+    *,
+    noise_db: float = -30.0,
+    min_duration_sec: float = 0.5,
+) -> list[tuple[float, float]]:
+    """Detect silent audio ranges via FFmpeg's silencedetect filter. Returns
+    (start_sec, end_sec) pairs. If the file ends while still silent, the final
+    range is clipped to the file's duration."""
+    stderr = _run_capture_stderr(
+        [
+            "ffmpeg",
+            "-i",
+            str(input_path),
+            "-af",
+            f"silencedetect=noise={noise_db}dB:d={min_duration_sec}",
+            "-f",
+            "null",
+            "-",
+        ]
+    )
+    starts = [float(m) for m in re.findall(r"silence_start:\s*(-?[\d.]+)", stderr)]
+    ends = [float(m) for m in re.findall(r"silence_end:\s*(-?[\d.]+)", stderr)]
+    pairs = list(zip(starts, ends))
+    if len(starts) > len(ends):
+        pairs.append((starts[-1], get_duration_sec(input_path)))
+    return pairs
