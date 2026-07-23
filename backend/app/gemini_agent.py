@@ -13,6 +13,7 @@ from uuid import uuid4
 import httpx
 
 from .validators import parse_time_like, validate_trim
+from .video_tools import detect_silence
 
 logger = logging.getLogger(__name__)
 MAX_CONTEXT_TURNS = 10
@@ -24,6 +25,33 @@ GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     "gemini-2.0-flash:generateContent"
 )
+_SILENCE_KEYWORDS = re.compile(
+    r"\b(dead\s*air|silence|silent|pause[s]?|awkward gap[s]?)\b", re.IGNORECASE
+)
+
+
+def _wants_silence_removal(prompt: str) -> bool:
+    return bool(_SILENCE_KEYWORDS.search(prompt))
+
+
+def _find_persisted_upload(uploads_dir: Path, sprite_job_id: str) -> Optional[Path]:
+    matches = list(uploads_dir.glob(f"{sprite_job_id}.*"))
+    return matches[0] if matches else None
+
+
+def _silence_proposals(silences: list[tuple[float, float]]) -> list[dict]:
+    return [
+        {
+            "action": "trim_video",
+            "operation": "remove_segment",
+            "start_sec": round(start, 3),
+            "end_sec": round(end, 3),
+            "reason": f"Detected {round(end - start, 2)}s of silence via audio analysis.",
+            "confidence": 0.9,
+            "speed_multiplier": None,
+        }
+        for start, end in silences
+    ]
 
 
 def _select_sprite_files(sprites_dir: Path, sprite_job_id: str, limit: int) -> list[Path]:
@@ -189,10 +217,13 @@ async def plan_edits(
     speed_ranges: Optional[list[dict]] = None,
     sprite_job_id: Optional[str] = None,
     sprites_dir: Optional[Path] = None,
+    uploads_dir: Optional[Path] = None,
 ) -> dict:
     """Plan -> validate -> propose (ADR-0003). One bounded self-correction retry
     if the model's first attempt yields zero valid proposals; falls back to the
-    regex heuristic only if that retry also fails."""
+    regex heuristic only if that retry also fails. Silence/dead-air detection
+    (X5) is a deterministic FFmpeg tool that runs independently of Gemini and
+    merges its proposals in regardless of which path produced the rest."""
     plan_id = str(uuid4())
     api_key = os.getenv("GEMINI_API_KEY")
     sprite_files: list[Path] = []
@@ -200,6 +231,17 @@ async def plan_edits(
         sprite_files = await asyncio.to_thread(
             _select_sprite_files, sprites_dir, sprite_job_id, MAX_SPRITE_IMAGES
         )
+
+    silence_suggestions: list[dict] = []
+    if _wants_silence_removal(prompt) and sprite_job_id and uploads_dir:
+        source_path = await asyncio.to_thread(_find_persisted_upload, uploads_dir, sprite_job_id)
+        if source_path is not None:
+            try:
+                silences = await asyncio.to_thread(detect_silence, source_path)
+                silence_suggestions = _silence_proposals(silences)
+            except Exception:
+                logger.exception("SILENCE_DETECTION_FAILED")
+
     logger.info(
         "PLAN_EDITS_REQUEST %s",
         {
@@ -213,10 +255,11 @@ async def plan_edits(
             "trim_ranges_count": len(trim_ranges or []),
             "speed_ranges_count": len(speed_ranges or []),
             "sprite_images_attached": len(sprite_files),
+            "silence_proposals": len(silence_suggestions),
         },
     )
     if not api_key:
-        fallback_suggestions = _fallback_suggest_cuts(prompt, duration_sec)
+        fallback_suggestions = _fallback_suggest_cuts(prompt, duration_sec) + silence_suggestions
         result = {
             "plan_id": plan_id,
             "model": "fallback",
@@ -317,7 +360,7 @@ async def plan_edits(
         "model": "gemini-2.0-flash",
         "strategy": strategy,
         "reasoning": reasoning,
-        "proposals": [{**item, "id": str(uuid4())} for item in normalized],
+        "proposals": [{**item, "id": str(uuid4())} for item in normalized + silence_suggestions],
     }
     logger.info("PLAN_EDITS_NORMALIZED_RESPONSE %s", result)
     return result

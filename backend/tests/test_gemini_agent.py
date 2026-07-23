@@ -193,3 +193,89 @@ def test_plan_edits_falls_back_to_regex_if_retry_also_invalid(monkeypatch):
     assert len(result["proposals"]) >= 1
     assert result["proposals"][0]["start_sec"] == 4
     assert result["proposals"][0]["end_sec"] == 5
+
+
+def test_plan_edits_adds_silence_proposals_when_requested(tmp_path, monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir()
+    (uploads_dir / "job5.mp4").write_bytes(b"fake-video-bytes")
+
+    monkeypatch.setattr(gemini_agent, "detect_silence", lambda path: [(2.0, 4.5)])
+
+    result = asyncio.run(
+        gemini_agent.plan_edits(
+            prompt="remove the dead air",
+            duration_sec=20.0,
+            sprite_interval_sec=1.0,
+            total_frames=20,
+            sheets_count=1,
+            sprite_job_id="job5",
+            uploads_dir=uploads_dir,
+        )
+    )
+
+    silence_items = [p for p in result["proposals"] if "silence" in p["reason"].lower()]
+    assert len(silence_items) == 1
+    assert silence_items[0]["start_sec"] == 2.0
+    assert silence_items[0]["end_sec"] == 4.5
+    assert silence_items[0]["confidence"] == 0.9
+
+
+def test_plan_edits_skips_silence_detection_without_keyword(tmp_path, monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir()
+    (uploads_dir / "job6.mp4").write_bytes(b"fake-video-bytes")
+
+    called = {"n": 0}
+
+    def fake_detect_silence(path):
+        called["n"] += 1
+        return [(2.0, 4.5)]
+
+    monkeypatch.setattr(gemini_agent, "detect_silence", fake_detect_silence)
+
+    result = asyncio.run(
+        gemini_agent.plan_edits(
+            prompt="make it faster",
+            duration_sec=20.0,
+            sprite_interval_sec=1.0,
+            total_frames=20,
+            sheets_count=1,
+            sprite_job_id="job6",
+            uploads_dir=uploads_dir,
+        )
+    )
+
+    assert called["n"] == 0
+    assert not any("silence" in p["reason"].lower() for p in result["proposals"])
+
+
+def test_plan_edits_skips_silence_detection_when_upload_missing(tmp_path, monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir()
+
+    called = {"n": 0}
+
+    def fake_detect_silence(path):
+        called["n"] += 1
+        return [(2.0, 4.5)]
+
+    monkeypatch.setattr(gemini_agent, "detect_silence", fake_detect_silence)
+
+    result = asyncio.run(
+        gemini_agent.plan_edits(
+            prompt="remove the dead air",
+            duration_sec=20.0,
+            sprite_interval_sec=1.0,
+            total_frames=20,
+            sheets_count=1,
+            sprite_job_id="missing-job",
+            uploads_dir=uploads_dir,
+        )
+    )
+
+    assert called["n"] == 0
+    assert not any("silence" in p["reason"].lower() for p in result["proposals"])

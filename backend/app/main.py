@@ -78,18 +78,21 @@ def _allowed_origins() -> list[str]:
     return sorted(origins)
 
 
-def _sweep_old_outputs() -> None:
-    # ponytail: opportunistic sweep-on-export, not a background timer — survives
+def _sweep_stale_media() -> None:
+    # ponytail: opportunistic sweep-on-request, not a background timer — survives
     # the scale-to-zero host since it only runs when a request is actually in flight.
+    # Covers OUTPUT_DIR (rendered exports) and UPLOAD_DIR (source videos persisted
+    # alongside sprites for later tools like silence detection, ADR-0002/X5).
     if OUTPUT_TTL_MIN <= 0:
         return
     cutoff = time.time() - OUTPUT_TTL_MIN * 60
-    for path in OUTPUT_DIR.glob("*"):
-        try:
-            if path.is_file() and path.stat().st_mtime < cutoff:
-                path.unlink(missing_ok=True)
-        except OSError:
-            continue
+    for directory in (OUTPUT_DIR, UPLOAD_DIR):
+        for path in directory.glob("*"):
+            try:
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink(missing_ok=True)
+            except OSError:
+                continue
 
 
 def _enforce_max_duration(duration_sec: float) -> None:
@@ -214,6 +217,7 @@ async def analyze_sprites(
     rows: int = Form(10),
     thumb_width: int = Form(320),
 ) -> SpriteAnalysisResponse:
+    await asyncio.to_thread(_sweep_stale_media)
     try:
         validate_sprite_params(interval_sec, columns, rows)
     except ValueError as exc:
@@ -284,7 +288,16 @@ async def analyze_sprites(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Sprite analysis failed: {exc}") from exc
     finally:
-        upload_path.unlink(missing_ok=True)
+        # Keep the source video (keyed by sprite_job_id) so tools like silence
+        # detection can locate it later without a second upload — only when
+        # sprites are persisted; otherwise there's nothing to key it to.
+        if persist_sprites:
+            try:
+                upload_path.replace(UPLOAD_DIR / f"{sprite_job_id}{upload_path.suffix}")
+            except OSError:
+                upload_path.unlink(missing_ok=True)
+        else:
+            upload_path.unlink(missing_ok=True)
 
     return SpriteAnalysisResponse(
         duration_sec=analysis["duration_sec"],
@@ -355,6 +368,7 @@ async def agent_plan(payload: AgentPlanRequest) -> AgentPlanResponse:
             speed_ranges=[item.model_dump() for item in payload.speed_ranges],
             sprite_job_id=payload.sprite_job_id,
             sprites_dir=SPRITES_DIR,
+            uploads_dir=UPLOAD_DIR,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -377,7 +391,7 @@ async def export_from_file(
     speed_factor: Optional[float] = Form(default=None),
     speed: Optional[str] = Form(default=None),
 ) -> ExportResponse:
-    await asyncio.to_thread(_sweep_old_outputs)
+    await asyncio.to_thread(_sweep_stale_media)
     max_mb = int(os.getenv("MAX_FILE_SIZE_MB", "500"))
     try:
         input_path = await save_upload_file(

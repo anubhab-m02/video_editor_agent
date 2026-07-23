@@ -79,7 +79,7 @@ const PLACEHOLDER_MESSAGES: ChatMessage[] = [
         id: "1",
         role: "assistant",
         content:
-            "Hey! I can trim, cut, extract, and speed up sections. Upload a short video and iterate with me.",
+            "Hey! I can trim, cut, extract, speed up sections, and detect dead air/silence. Upload a video and iterate with me.",
     },
 ];
 const MAX_VIDEO_DURATION_SEC = 1200; // 20 min, ADR-0006
