@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -203,7 +204,7 @@ async def analyze_sprites(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     upload_path = await save_upload_file(file=file, upload_dir=UPLOAD_DIR)
     try:
-        duration_sec = probe_duration_or_cleanup(upload_path)
+        duration_sec = await asyncio.to_thread(probe_duration_or_cleanup, upload_path)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     _enforce_max_duration(duration_sec)
@@ -213,7 +214,8 @@ async def analyze_sprites(
     try:
         if persist_sprites:
             sprite_output_dir = SPRITES_DIR / sprite_job_id
-            analysis = generate_sprite_sheets(
+            analysis = await asyncio.to_thread(
+                generate_sprite_sheets,
                 input_path=upload_path,
                 output_dir=sprite_output_dir,
                 interval_sec=interval_sec,
@@ -238,7 +240,8 @@ async def analyze_sprites(
                 )
         else:
             with tempfile.TemporaryDirectory(prefix="sprite_job_") as temp_dir:
-                analysis = generate_sprite_sheets(
+                analysis = await asyncio.to_thread(
+                    generate_sprite_sheets,
                     input_path=upload_path,
                     output_dir=Path(temp_dir),
                     interval_sec=interval_sec,
@@ -304,7 +307,7 @@ async def analyze_token_estimate_from_file(
 
     try:
         try:
-            duration_sec = probe_duration_or_cleanup(save_path)
+            duration_sec = await asyncio.to_thread(probe_duration_or_cleanup, save_path)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         _enforce_max_duration(duration_sec)
@@ -362,7 +365,7 @@ async def export_from_file(
         raise HTTPException(status_code=413, detail=str(exc)) from exc
 
     try:
-        duration_sec = probe_duration_or_cleanup(input_path)
+        duration_sec = await asyncio.to_thread(probe_duration_or_cleanup, input_path)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     _enforce_max_duration(duration_sec)
@@ -427,14 +430,16 @@ async def export_from_file(
                 speed_ranges=normalized_speed_ranges,
             )
             if speed_segments and any(abs(seg[2] - 1.0) > 1e-6 for seg in speed_segments):
-                output_path = render_segments_with_speed(
+                output_path = await asyncio.to_thread(
+                    render_segments_with_speed,
                     input_path=input_path,
                     output_dir=OUTPUT_DIR,
                     segments=speed_segments,
                 )
             else:
                 if merged_ranges:
-                    output_path = remove_segments_and_stitch(
+                    output_path = await asyncio.to_thread(
+                        remove_segments_and_stitch,
                         input_path=input_path,
                         output_dir=OUTPUT_DIR,
                         duration_sec=duration_sec,
@@ -442,7 +447,8 @@ async def export_from_file(
                     )
                 else:
                     # No trims: produce a normal export copy by re-encoding the full source range.
-                    output_path = extract_range(
+                    output_path = await asyncio.to_thread(
+                        extract_range,
                         input_path=input_path,
                         output_dir=OUTPUT_DIR,
                         start_sec=0.0,
@@ -450,7 +456,8 @@ async def export_from_file(
                     )
 
             if selected_speed > 1.0 and not normalized_speed_ranges:
-                speed_output_path = apply_speed_multiplier(
+                speed_output_path = await asyncio.to_thread(
+                    apply_speed_multiplier,
                     input_path=output_path,
                     output_dir=OUTPUT_DIR,
                     speed_multiplier=selected_speed,
@@ -458,7 +465,7 @@ async def export_from_file(
                 output_path.unlink(missing_ok=True)
                 output_path = speed_output_path
             # Sanity check output can be probed.
-            _ = get_duration_sec(output_path)
+            _ = await asyncio.to_thread(get_duration_sec, output_path)
         except HTTPException:
             raise
         except Exception as exc:
