@@ -224,7 +224,7 @@ async def analyze_sprites(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     _enforce_max_duration(duration_sec)
-    persist_sprites = os.getenv("SPRITE_PERSIST", "false").strip().lower() == "true"
+    persist_sprites = os.getenv("SPRITE_PERSIST", "true").strip().lower() == "true"
     sprite_job_id = str(uuid4())
 
     try:
@@ -292,6 +292,7 @@ async def analyze_sprites(
         columns=analysis["columns"],
         rows=analysis["rows"],
         total_frames=analysis["total_frames"],
+        sprite_job_id=sprite_job_id if persist_sprites else "",
         sheets=sheets,
     )
 
@@ -352,6 +353,8 @@ async def ai_suggest_cuts_from_sprites(payload: SuggestCutsRequest) -> SuggestCu
             conversation_summary=payload.conversation_summary,
             trim_ranges=[item.model_dump() for item in payload.trim_ranges],
             speed_ranges=[item.model_dump() for item in payload.speed_ranges],
+            sprite_job_id=payload.sprite_job_id,
+            sprites_dir=SPRITES_DIR,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

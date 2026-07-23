@@ -28,6 +28,7 @@ class SpriteAnalysisResponse(BaseModel):
     columns: int
     rows: int
     total_frames: int
+    sprite_job_id: str = ""
     sheets: list[SpriteSheet]
 
 
@@ -81,6 +82,7 @@ class SuggestCutsRequest(BaseModel):
     sprite_interval_sec: float = Field(gt=0)
     total_frames: int = Field(gt=0)
     sheets_count: int = Field(gt=0)
+    sprite_job_id: Optional[str] = None
     chat_history: list[ChatTurn] = Field(default_factory=list)
     conversation_summary: Optional[str] = None
     trim_ranges: list[TrimRange] = Field(default_factory=list)
