@@ -22,3 +22,6 @@ backend/media/
 # OS
 .DS_Store
 *.tsbuildinfo
+
+# Planning docs (local only, never pushed)
+docs/
