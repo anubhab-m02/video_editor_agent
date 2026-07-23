@@ -249,3 +249,38 @@ def test_export_splits_full_speed_when_trims_are_present(monkeypatch, tmp_path):
     assert captured["segments"] == [(0.0, 3.0, 2.0), (4.0, 6.0, 2.0), (7.0, 8.0, 2.0)]
 
 
+def test_api_key_required_when_set(monkeypatch):
+    import app.main as main
+
+    monkeypatch.setattr(main, "API_KEY", "secret123")
+
+    no_header = client.post("/analyze/token-estimate", json={"duration_sec": 10})
+    assert no_header.status_code == 401
+
+    wrong_header = client.post(
+        "/analyze/token-estimate",
+        json={"duration_sec": 10},
+        headers={"X-API-Key": "wrong"},
+    )
+    assert wrong_header.status_code == 401
+
+    right_header = client.post(
+        "/analyze/token-estimate",
+        json={"duration_sec": 10},
+        headers={"X-API-Key": "secret123"},
+    )
+    assert right_header.status_code == 200
+
+    health = client.get("/health")
+    assert health.status_code == 200
+
+
+def test_api_key_not_required_when_unset(monkeypatch):
+    import app.main as main
+
+    monkeypatch.setattr(main, "API_KEY", "")
+
+    response = client.post("/analyze/token-estimate", json={"duration_sec": 10})
+    assert response.status_code == 200
+
+

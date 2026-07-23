@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -168,6 +168,21 @@ app.add_middleware(
 app.mount("/media/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 app.mount("/media/outputs", StaticFiles(directory=str(OUTPUT_DIR)), name="outputs")
 app.mount("/media/sprites", StaticFiles(directory=str(SPRITES_DIR)), name="sprites")
+
+API_KEY = os.getenv("API_KEY", "").strip()
+
+
+@app.middleware("http")
+async def require_api_key(request: Request, call_next):
+    # ponytail: single shared secret (self-host, single-user); /health and /media/*
+    # stay open since <video>/<img> tags can't send custom headers. Add per-user
+    # auth if this ever goes multi-tenant.
+    open_path = request.url.path == "/health" or request.url.path.startswith("/media/")
+    if API_KEY and request.method != "OPTIONS" and not open_path:
+        if request.headers.get("x-api-key") != API_KEY:
+            return JSONResponse(status_code=401, content={"detail": "Invalid or missing API key."})
+    return await call_next(request)
+
 
 @app.get("/health")
 def health() -> dict:
