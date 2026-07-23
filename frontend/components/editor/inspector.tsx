@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Download, Sparkles, Send, Bot, User, Film, Sigma } from "lucide-react";
+import { Download, Sparkles, Send, Bot, User, Film, Sigma, Check, X, Undo2 } from "lucide-react";
 import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -61,6 +61,9 @@ type SuggestCutsResponse = {
     model: string;
     strategy: string;
 };
+
+type ProposalStatus = "pending" | "accepted" | "rejected";
+type Proposal = CutSuggestion & { id: string; status: ProposalStatus };
 
 type ExportResponse = {
     output_url: string;
@@ -155,6 +158,91 @@ function mergeSpeedSuggestions(
     return next;
 }
 
+type TrimLike = { start: number; end: number };
+type SpeedLike = { start: number; end: number; speed: number };
+type ProposalState = { proposals: Proposal[]; trimRanges: TrimLike[]; speedRanges: SpeedLike[] };
+
+// Pure state-transition functions for the preview-before-apply flow (PRD P0-2).
+// Kept free of React state so the accept/reject/undo logic is directly testable.
+export function applyProposalAccept(
+    proposals: Proposal[],
+    trimRanges: TrimLike[],
+    speedRanges: SpeedLike[],
+    id: string
+): ProposalState {
+    const proposal = proposals.find((p) => p.id === id);
+    if (!proposal || proposal.status !== "pending") {
+        return { proposals, trimRanges, speedRanges };
+    }
+    return {
+        proposals: proposals.map((p) => (p.id === id ? { ...p, status: "accepted" } : p)),
+        trimRanges: proposal.action === "trim_video" ? mergeTrimSuggestions(trimRanges, [proposal]) : trimRanges,
+        speedRanges: proposal.action === "speed_video" ? mergeSpeedSuggestions(speedRanges, [proposal]) : speedRanges,
+    };
+}
+
+export function applyProposalReject(proposals: Proposal[], id: string): Proposal[] {
+    return proposals.map((p) => (p.id === id ? { ...p, status: "rejected" } : p));
+}
+
+export function applyProposalUndo(
+    proposals: Proposal[],
+    trimRanges: TrimLike[],
+    speedRanges: SpeedLike[],
+    id: string
+): ProposalState {
+    const proposal = proposals.find((p) => p.id === id);
+    if (!proposal || proposal.status !== "accepted") {
+        return { proposals, trimRanges, speedRanges };
+    }
+    let nextTrim = trimRanges;
+    let nextSpeed = speedRanges;
+    if (proposal.action === "trim_video") {
+        nextTrim = trimRanges.filter(
+            (r) =>
+                !(
+                    Math.abs(r.start - proposal.start_sec) <= RANGE_EPSILON_SEC &&
+                    Math.abs(r.end - proposal.end_sec) <= RANGE_EPSILON_SEC
+                )
+        );
+    } else {
+        const speed = proposal.speed_multiplier && proposal.speed_multiplier > 0 ? proposal.speed_multiplier : 2;
+        nextSpeed = speedRanges.filter(
+            (r) =>
+                !(
+                    Math.abs(r.start - proposal.start_sec) <= RANGE_EPSILON_SEC &&
+                    Math.abs(r.end - proposal.end_sec) <= RANGE_EPSILON_SEC &&
+                    Math.abs(r.speed - speed) <= 0.01
+                )
+        );
+    }
+    return {
+        proposals: proposals.map((p) => (p.id === id ? { ...p, status: "pending" } : p)),
+        trimRanges: nextTrim,
+        speedRanges: nextSpeed,
+    };
+}
+
+export function applyProposalAcceptAll(
+    proposals: Proposal[],
+    trimRanges: TrimLike[],
+    speedRanges: SpeedLike[]
+): ProposalState {
+    const pending = proposals.filter((p) => p.status === "pending");
+    if (pending.length === 0) return { proposals, trimRanges, speedRanges };
+    const trimItems = pending.filter((p) => p.action === "trim_video");
+    const speedItems = pending.filter((p) => p.action === "speed_video");
+    return {
+        proposals: proposals.map((p) => (p.status === "pending" ? { ...p, status: "accepted" } : p)),
+        trimRanges: trimItems.length > 0 ? mergeTrimSuggestions(trimRanges, trimItems) : trimRanges,
+        speedRanges: speedItems.length > 0 ? mergeSpeedSuggestions(speedRanges, speedItems) : speedRanges,
+    };
+}
+
+export function applyProposalRejectAll(proposals: Proposal[]): Proposal[] {
+    return proposals.map((p) => (p.status === "pending" ? { ...p, status: "rejected" } : p));
+}
+
 export function Inspector() {
     const { sourceFile, duration, trimRanges, speedRanges, setTrimRanges, setSpeedRanges } = useVideo();
     const [messages, setMessages] = useState<ChatMessage[]>(PLACEHOLDER_MESSAGES);
@@ -163,7 +251,7 @@ export function Inspector() {
     const [isEstimating, setIsEstimating] = useState(false);
     const [spriteData, setSpriteData] = useState<SpriteAnalysisResponse | null>(null);
     const [tokenEstimate, setTokenEstimate] = useState<TokenEstimateResponse | null>(null);
-    const [suggestions, setSuggestions] = useState<CutSuggestion[]>([]);
+    const [proposals, setProposals] = useState<Proposal[]>([]);
     const [isSuggesting, setIsSuggesting] = useState(false);
     const [isExporting, setIsExporting] = useState(false);
     const [exportResult, setExportResult] = useState<ExportResponse | null>(null);
@@ -242,24 +330,20 @@ export function Inspector() {
                 throw new Error(message || "Failed to suggest edits.");
             }
             const result = data as SuggestCutsResponse;
-            setSuggestions(result.suggestions);
-            const trimSuggestions = result.suggestions.filter((s) => s.action === "trim_video");
-            const speedSuggestions = result.suggestions.filter((s) => s.action === "speed_video");
-
-            // Iterative behavior: merge new AI suggestions into the existing timeline
-            // instead of replacing all previous edits.
-            if (trimSuggestions.length > 0) {
-                setTrimRanges(mergeTrimSuggestions(trimRanges, trimSuggestions));
-            }
-            if (speedSuggestions.length > 0) {
-                setSpeedRanges(mergeSpeedSuggestions(speedRanges, speedSuggestions));
-            }
+            // Preview-before-apply: new suggestions arrive as pending proposals only.
+            // Nothing touches the timeline until the user accepts (PRD P0-2).
+            const nextProposals: Proposal[] = result.suggestions.map((s) => ({
+                ...s,
+                id: crypto.randomUUID(),
+                status: "pending",
+            }));
+            setProposals((prev) => [...prev, ...nextProposals]);
             setMessages((prev) => [
                 ...prev,
                 {
                     id: (Date.now() + 1).toString(),
                     role: "assistant",
-                    content: `Added ${trimSuggestions.length} trim and ${speedSuggestions.length} speed suggestion(s) via ${result.model}.`,
+                    content: `${nextProposals.length} proposal(s) ready for review via ${result.model} (${result.strategy}).`,
                 },
             ]);
         } catch (error) {
@@ -277,6 +361,35 @@ export function Inspector() {
         } finally {
             setIsSuggesting(false);
         }
+    }
+
+    function acceptProposal(id: string) {
+        const result = applyProposalAccept(proposals, trimRanges, speedRanges, id);
+        setProposals(result.proposals);
+        setTrimRanges(result.trimRanges);
+        setSpeedRanges(result.speedRanges);
+    }
+
+    function rejectProposal(id: string) {
+        setProposals(applyProposalReject(proposals, id));
+    }
+
+    function undoProposal(id: string) {
+        const result = applyProposalUndo(proposals, trimRanges, speedRanges, id);
+        setProposals(result.proposals);
+        setTrimRanges(result.trimRanges);
+        setSpeedRanges(result.speedRanges);
+    }
+
+    function acceptAllPending() {
+        const result = applyProposalAcceptAll(proposals, trimRanges, speedRanges);
+        setProposals(result.proposals);
+        setTrimRanges(result.trimRanges);
+        setSpeedRanges(result.speedRanges);
+    }
+
+    function rejectAllPending() {
+        setProposals(applyProposalRejectAll(proposals));
     }
 
     function handleKeyDown(e: React.KeyboardEvent) {
@@ -441,6 +554,8 @@ export function Inspector() {
             setIsExporting(false);
         }
     }
+
+    const pendingProposalCount = proposals.filter((p) => p.status === "pending").length;
 
     return (
         <div
@@ -612,7 +727,7 @@ export function Inspector() {
                             </p>
                         </div>
                     ) : null}
-                    {suggestions.length > 0 ? (
+                    {proposals.length > 0 ? (
                         <div
                             className="rounded-lg p-3"
                             style={{
@@ -621,23 +736,84 @@ export function Inspector() {
                                 boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
                             }}
                         >
-                            <p className="text-xs font-semibold text-zinc-300">AI Suggestions</p>
-                            <div className="mt-2 space-y-1">
-                                {suggestions.map((s, idx) => (
+                            <div className="flex items-center justify-between">
+                                <p className="text-xs font-semibold text-zinc-300">
+                                    AI Proposals{pendingProposalCount > 0 ? ` (${pendingProposalCount} pending)` : ""}
+                                </p>
+                                {pendingProposalCount > 0 ? (
+                                    <div className="flex gap-1.5">
+                                        <button
+                                            onClick={acceptAllPending}
+                                            className="rounded px-1.5 py-0.5 text-[10px] font-medium text-emerald-300 transition-colors duration-200 ease hover:bg-emerald-500/15"
+                                        >
+                                            Accept all
+                                        </button>
+                                        <button
+                                            onClick={rejectAllPending}
+                                            className="rounded px-1.5 py-0.5 text-[10px] font-medium text-zinc-400 transition-colors duration-200 ease hover:bg-white/[0.06]"
+                                        >
+                                            Reject all
+                                        </button>
+                                    </div>
+                                ) : null}
+                            </div>
+                            <div className="mt-2 space-y-1.5">
+                                {proposals.map((p) => (
                                     <div
-                                        key={`${s.start_sec}-${s.end_sec}-${idx}`}
-                                        className="rounded border border-white/[0.06] bg-white/[0.03] px-2 py-1 text-[11px] text-zinc-300"
+                                        key={p.id}
+                                        role="listitem"
+                                        aria-label={`${p.action === "speed_video" ? "Speed" : "Trim"} proposal, ${p.start_sec.toFixed(2)} to ${p.end_sec.toFixed(2)} seconds, ${Math.round(p.confidence * 100)}% confidence, ${p.status}`}
+                                        className={`rounded border px-2 py-1.5 text-[11px] transition-opacity duration-200 ease ${p.status === "rejected" ? "opacity-40" : ""}`}
+                                        style={{
+                                            borderColor: p.status === "accepted" ? "rgba(52,211,153,0.35)" : "rgba(255,255,255,0.06)",
+                                            background: p.status === "accepted" ? "rgba(16,185,129,0.06)" : "rgba(255,255,255,0.03)",
+                                        }}
                                     >
-                                        <span className="mr-2 rounded border border-white/[0.08] bg-white/[0.05] px-1 py-px text-[10px] uppercase tracking-wide text-zinc-400">
-                                            {s.action === "speed_video" ? `Speed ${s.speed_multiplier ?? 2}x` : "Trim"}
-                                        </span>
-                                        <span className="font-mono text-zinc-100">
-                                            {s.start_sec.toFixed(2)}s → {s.end_sec.toFixed(2)}s
-                                        </span>
-                                        <span className="ml-2 text-zinc-400">
-                                            ({Math.round(s.confidence * 100)}%)
-                                        </span>
-                                        <p className="text-zinc-500">{s.reason}</p>
+                                        <div className="flex items-center gap-2 text-zinc-300">
+                                            <span className="rounded border border-white/[0.08] bg-white/[0.05] px-1 py-px text-[10px] uppercase tracking-wide text-zinc-400">
+                                                {p.action === "speed_video" ? `Speed ${p.speed_multiplier ?? 2}x` : "Trim"}
+                                            </span>
+                                            <span className="font-mono text-zinc-100">
+                                                {p.start_sec.toFixed(2)}s → {p.end_sec.toFixed(2)}s
+                                            </span>
+                                            <span className={p.confidence < 0.5 ? "text-amber-300" : "text-zinc-400"}>
+                                                ({Math.round(p.confidence * 100)}%)
+                                            </span>
+                                            <div className="ml-auto flex shrink-0 items-center gap-1">
+                                                {p.status === "pending" ? (
+                                                    <>
+                                                        <button
+                                                            onClick={() => acceptProposal(p.id)}
+                                                            aria-label="Accept proposal"
+                                                            className="rounded p-0.5 text-emerald-300 transition-colors duration-200 ease hover:bg-emerald-500/15"
+                                                        >
+                                                            <Check className="h-3.5 w-3.5" />
+                                                        </button>
+                                                        <button
+                                                            onClick={() => rejectProposal(p.id)}
+                                                            aria-label="Reject proposal"
+                                                            className="rounded p-0.5 text-zinc-400 transition-colors duration-200 ease hover:bg-white/[0.06]"
+                                                        >
+                                                            <X className="h-3.5 w-3.5" />
+                                                        </button>
+                                                    </>
+                                                ) : p.status === "accepted" ? (
+                                                    <>
+                                                        <span className="text-[10px] text-emerald-300">Applied</span>
+                                                        <button
+                                                            onClick={() => undoProposal(p.id)}
+                                                            aria-label="Undo applied proposal"
+                                                            className="rounded p-0.5 text-zinc-400 transition-colors duration-200 ease hover:bg-white/[0.06]"
+                                                        >
+                                                            <Undo2 className="h-3.5 w-3.5" />
+                                                        </button>
+                                                    </>
+                                                ) : (
+                                                    <span className="text-[10px] text-zinc-500">Rejected</span>
+                                                )}
+                                            </div>
+                                        </div>
+                                        <p className="mt-0.5 text-zinc-500">{p.reason}</p>
                                     </div>
                                 ))}
                             </div>
