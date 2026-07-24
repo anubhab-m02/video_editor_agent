@@ -21,9 +21,10 @@ MAX_SUMMARY_CHARS = 500
 # ponytail: fixed cap keeps the coarse vision pass's cost flat regardless of video
 # duration (ADR-0002/ADR-0006) — evenly subsample instead of sending every sheet.
 MAX_SPRITE_IMAGES = 6
+GEMINI_MODEL = "gemini-2.5-flash"  # gemini-2.0-flash was shut down 2026-06-01
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.0-flash:generateContent"
+    f"{GEMINI_MODEL}:generateContent"
 )
 _SILENCE_KEYWORDS = re.compile(
     r"\b(dead\s*air|silence|silent|pause[s]?|awkward gap[s]?)\b", re.IGNORECASE
@@ -357,7 +358,7 @@ async def plan_edits(
 
     result = {
         "plan_id": plan_id,
-        "model": "gemini-2.0-flash",
+        "model": GEMINI_MODEL,
         "strategy": strategy,
         "reasoning": reasoning,
         "proposals": [{**item, "id": str(uuid4())} for item in normalized + silence_suggestions],

@@ -43,7 +43,10 @@ from .video_tools import (
 )
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(BACKEND_ROOT / ".env")
+# override=True: backend/.env is the source of truth for local/self-host dev —
+# a stale exported shell var (e.g. GEMINI_API_KEY from an unrelated project)
+# should never silently win over what's actually configured for this app.
+load_dotenv(BACKEND_ROOT / ".env", override=True)
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 if not logging.getLogger().handlers:
     logging.basicConfig(
