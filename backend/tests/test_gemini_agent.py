@@ -62,7 +62,7 @@ def test_plan_edits_attaches_sprite_images_when_available(tmp_path, monkeypatch)
 
     captured = {}
 
-    async def fake_post(self, url, json=None):
+    async def fake_post(self, url, json=None, headers=None):
         captured["payload"] = json
         return _FakeResponse(
             _gemini_json_response(
@@ -107,7 +107,7 @@ def test_plan_edits_falls_back_to_text_only_without_sprite_job_id(monkeypatch):
 
     captured = {}
 
-    async def fake_post(self, url, json=None):
+    async def fake_post(self, url, json=None, headers=None):
         captured["payload"] = json
         return _FakeResponse(_gemini_json_response([]))
 
@@ -134,7 +134,7 @@ def test_plan_edits_self_corrects_after_invalid_first_attempt(monkeypatch):
 
     call_count = {"n": 0}
 
-    async def fake_post(self, url, json=None):
+    async def fake_post(self, url, json=None, headers=None):
         call_count["n"] += 1
         if call_count["n"] == 1:
             # Out of range (end_sec > duration): every item should fail validation.
@@ -171,7 +171,7 @@ def test_plan_edits_self_corrects_after_invalid_first_attempt(monkeypatch):
 def test_plan_edits_falls_back_to_regex_if_retry_also_invalid(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
 
-    async def fake_post(self, url, json=None):
+    async def fake_post(self, url, json=None, headers=None):
         return _FakeResponse(
             _gemini_json_response(
                 [{"action": "trim_video", "start_sec": 1.0, "end_sec": 999.0, "reason": "bad", "confidence": 0.5}]

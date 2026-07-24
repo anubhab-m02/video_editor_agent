@@ -21,7 +21,7 @@ MAX_SUMMARY_CHARS = 500
 # ponytail: fixed cap keeps the coarse vision pass's cost flat regardless of video
 # duration (ADR-0002/ADR-0006) — evenly subsample instead of sending every sheet.
 MAX_SPRITE_IMAGES = 6
-GEMINI_MODEL = "gemini-2.5-flash"  # gemini-2.0-flash was shut down 2026-06-01
+GEMINI_MODEL = "gemini-3.6-flash"  # gemini-2.0-flash was shut down 2026-06-01; verified live against the models API
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     f"{GEMINI_MODEL}:generateContent"
@@ -197,7 +197,11 @@ async def _call_gemini(api_key: str, parts: list[dict]) -> dict:
         "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
     }
     async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(f"{GEMINI_URL}?key={api_key}", json=payload)
+        # Key goes in a header, not the URL — httpx exceptions stringify the URL,
+        # and that string can end up in an HTTP error response shown to the user.
+        response = await client.post(
+            GEMINI_URL, json=payload, headers={"x-goog-api-key": api_key}
+        )
         response.raise_for_status()
         data = response.json()
     text = data["candidates"][0]["content"]["parts"][0]["text"]
