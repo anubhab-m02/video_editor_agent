@@ -747,6 +747,39 @@ export function Inspector() {
                             )}
                         </div>
                     ) : null}
+                    {messages.map((msg) => (
+                        <div
+                            key={msg.id}
+                            className={`flex min-w-0 gap-2.5 ${msg.role === "user" ? "flex-row-reverse" : ""}`}
+                        >
+                            <div
+                                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${msg.role === "assistant"
+                                    ? "bg-primary/20 text-primary"
+                                    : "bg-zinc-700 text-zinc-300"
+                                    }`}
+                            >
+                                {msg.role === "assistant" ? (
+                                    <Bot className="h-3.5 w-3.5" />
+                                ) : (
+                                    <User className="h-3.5 w-3.5" />
+                                )}
+                            </div>
+                            <div
+                                className={`min-w-0 break-words rounded-lg px-3 py-2 text-[13px] leading-relaxed ${msg.role === "assistant"
+                                    ? "text-zinc-300"
+                                    : "text-zinc-200"
+                                    }`}
+                                style={{
+                                    background: msg.role === "assistant"
+                                        ? "linear-gradient(180deg, rgba(39,39,42,0.6) 0%, rgba(24,24,27,0.7) 100%)"
+                                        : "rgba(16,185,129,0.1)",
+                                    border: `1px solid ${msg.role === "assistant" ? "rgba(255,255,255,0.06)" : "rgba(16,185,129,0.15)"}`,
+                                }}
+                            >
+                                {msg.content}
+                            </div>
+                        </div>
+                    ))}
                     {proposals.length > 0 ? (
                         <div
                             className="rounded-lg p-3"
@@ -839,39 +872,6 @@ export function Inspector() {
                             </div>
                         </div>
                     ) : null}
-                    {messages.map((msg) => (
-                        <div
-                            key={msg.id}
-                            className={`flex min-w-0 gap-2.5 ${msg.role === "user" ? "flex-row-reverse" : ""}`}
-                        >
-                            <div
-                                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${msg.role === "assistant"
-                                    ? "bg-primary/20 text-primary"
-                                    : "bg-zinc-700 text-zinc-300"
-                                    }`}
-                            >
-                                {msg.role === "assistant" ? (
-                                    <Bot className="h-3.5 w-3.5" />
-                                ) : (
-                                    <User className="h-3.5 w-3.5" />
-                                )}
-                            </div>
-                            <div
-                                className={`min-w-0 break-words rounded-lg px-3 py-2 text-[13px] leading-relaxed ${msg.role === "assistant"
-                                    ? "text-zinc-300"
-                                    : "text-zinc-200"
-                                    }`}
-                                style={{
-                                    background: msg.role === "assistant"
-                                        ? "linear-gradient(180deg, rgba(39,39,42,0.6) 0%, rgba(24,24,27,0.7) 100%)"
-                                        : "rgba(16,185,129,0.1)",
-                                    border: `1px solid ${msg.role === "assistant" ? "rgba(255,255,255,0.06)" : "rgba(16,185,129,0.15)"}`,
-                                }}
-                            >
-                                {msg.content}
-                            </div>
-                        </div>
-                    ))}
                     <div ref={messagesEndRef} />
                 </div>
             </ScrollArea>

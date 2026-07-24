@@ -69,3 +69,10 @@ video {
   border-radius: var(--radius);
   background: hsl(240 10% 6%);
 }
+
+/* Radix ScrollArea wraps its content in a display:table div sized to fit
+   unwrapped content — override so long text (URLs, error messages) wraps
+   instead of forcing the viewport wider. */
+[data-radix-scroll-area-viewport] > div {
+  display: block !important;
+}
