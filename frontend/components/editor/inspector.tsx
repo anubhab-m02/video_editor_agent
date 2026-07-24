@@ -1,13 +1,14 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Download, Sparkles, Send, Bot, User, Film, Sigma, Check, X, Undo2 } from "lucide-react";
+import { Download, Sparkles, Send, Bot, User, Film, Check, X, Undo2 } from "lucide-react";
 import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { useVideo } from "./video-context";
 import { fingerprintsMatch, type FileFingerprint } from "./video-store";
+import { DevPanel } from "./dev-panel";
 
 type ChatMessage = {
     id: string;
@@ -272,6 +273,9 @@ export function Inspector() {
     const [isSuggesting, setIsSuggesting] = useState(false);
     const [isExporting, setIsExporting] = useState(false);
     const [exportResult, setExportResult] = useState<ExportResponse | null>(null);
+    const [isDevPanelOpen, setIsDevPanelOpen] = useState(
+        () => process.env.NEXT_PUBLIC_DEV_PANEL === "true"
+    );
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const isVideoTooLong = duration > MAX_VIDEO_DURATION_SEC;
@@ -281,6 +285,19 @@ export function Inspector() {
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages]);
+
+    // Dev/debug panel toggle (Design Handoff Part 3) — hidden by default, never a
+    // creator-facing feature.
+    useEffect(() => {
+        function onKeyDown(e: KeyboardEvent) {
+            if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "d") {
+                e.preventDefault();
+                setIsDevPanelOpen((prev) => !prev);
+            }
+        }
+        window.addEventListener("keydown", onKeyDown);
+        return () => window.removeEventListener("keydown", onKeyDown);
+    }, []);
 
     // Auto-resize textarea to fit content
     useEffect(() => {
@@ -605,6 +622,7 @@ export function Inspector() {
     const pendingProposalCount = proposals.filter((p) => p.status === "pending").length;
 
     return (
+        <>
         <div
             className="flex h-full w-[320px] shrink-0 flex-col"
             style={{
@@ -660,19 +678,6 @@ export function Inspector() {
                     >
                         <Film className="h-3.5 w-3.5 text-zinc-400" />
                         {isAnalyzing ? "Generating..." : "Sprites"}
-                    </button>
-                    <button
-                        className="flex flex-1 items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-medium text-zinc-300 transition-all duration-200 ease hover:text-zinc-100 disabled:opacity-40 disabled:cursor-not-allowed"
-                        style={{
-                            border: "1px solid rgba(255,255,255,0.06)",
-                            background: "linear-gradient(180deg, rgba(39,39,42,0.5) 0%, rgba(24,24,27,0.6) 100%)",
-                            boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
-                        }}
-                        onClick={handleEstimateTokens}
-                        disabled={!sourceFile || isEstimating || isVideoTooLong}
-                    >
-                        <Sigma className="h-3.5 w-3.5 text-zinc-400" />
-                        {isEstimating ? "Estimating..." : "Tokens"}
                     </button>
                 </div>
 
@@ -740,38 +745,6 @@ export function Inspector() {
                                     Sprite files are temporary and not persisted in this environment.
                                 </p>
                             )}
-                        </div>
-                    ) : null}
-                    {tokenEstimate ? (
-                        <div
-                            className="rounded-lg p-3"
-                            style={{
-                                border: "1px solid rgba(255,255,255,0.06)",
-                                background: "linear-gradient(180deg, rgba(39,39,42,0.5) 0%, rgba(24,24,27,0.6) 100%)",
-                                boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
-                            }}
-                        >
-                            <p className="text-xs font-semibold text-zinc-300">Token Comparison</p>
-                            <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
-                                <div className="rounded border border-white/[0.06] bg-white/[0.03] p-2">
-                                    <p className="text-zinc-400">Direct Upload</p>
-                                    <p className="font-mono text-zinc-100">
-                                        {tokenEstimate.direct_video_tokens_est.toLocaleString()}
-                                    </p>
-                                </div>
-                                <div className="rounded border border-white/[0.06] bg-white/[0.03] p-2">
-                                    <p className="text-zinc-400">Sprite Sheets</p>
-                                    <p className="font-mono text-zinc-100">
-                                        {tokenEstimate.sprite_tokens_est.toLocaleString()}
-                                    </p>
-                                </div>
-                            </div>
-                            <p className="mt-2 text-[11px] text-zinc-400">
-                                Frames: {tokenEstimate.total_frames} | Sheets: {tokenEstimate.sheet_count}
-                            </p>
-                            <p className="mt-1 text-[11px] text-emerald-300">
-                                {tokenEstimate.recommendation}
-                            </p>
                         </div>
                     ) : null}
                     {proposals.length > 0 ? (
@@ -940,5 +913,14 @@ export function Inspector() {
                 </div>
             </div>
         </div>
+        <DevPanel
+            isOpen={isDevPanelOpen}
+            onClose={() => setIsDevPanelOpen(false)}
+            tokenEstimate={tokenEstimate}
+            isEstimating={isEstimating}
+            onEstimate={handleEstimateTokens}
+            canEstimate={Boolean(sourceFile) && !isVideoTooLong}
+        />
+        </>
     );
 }
