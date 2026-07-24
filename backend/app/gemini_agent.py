@@ -21,7 +21,7 @@ MAX_SUMMARY_CHARS = 500
 # ponytail: fixed cap keeps the coarse vision pass's cost flat regardless of video
 # duration (ADR-0002/ADR-0006) — evenly subsample instead of sending every sheet.
 MAX_SPRITE_IMAGES = 6
-GEMINI_MODEL = "gemini-3.6-flash"  # gemini-2.0-flash was shut down 2026-06-01; verified live against the models API
+GEMINI_MODEL = "gemini-3.1-flash-lite"  # ~6x cheaper output than 3.6-flash; matches our small-call-shape workload (few images in, short JSON out), verified live incl. structured output + image input
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     f"{GEMINI_MODEL}:generateContent"
