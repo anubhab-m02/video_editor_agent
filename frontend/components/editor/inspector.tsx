@@ -842,7 +842,7 @@ export function Inspector() {
                     {messages.map((msg) => (
                         <div
                             key={msg.id}
-                            className={`flex gap-2.5 ${msg.role === "user" ? "flex-row-reverse" : ""}`}
+                            className={`flex min-w-0 gap-2.5 ${msg.role === "user" ? "flex-row-reverse" : ""}`}
                         >
                             <div
                                 className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${msg.role === "assistant"
@@ -857,7 +857,7 @@ export function Inspector() {
                                 )}
                             </div>
                             <div
-                                className={`rounded-lg px-3 py-2 text-[13px] leading-relaxed ${msg.role === "assistant"
+                                className={`min-w-0 break-words rounded-lg px-3 py-2 text-[13px] leading-relaxed ${msg.role === "assistant"
                                     ? "text-zinc-300"
                                     : "text-zinc-200"
                                     }`}
