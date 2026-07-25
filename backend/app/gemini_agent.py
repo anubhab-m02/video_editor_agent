@@ -28,14 +28,24 @@ GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     f"{GEMINI_MODEL}:generateContent"
 )
-# ADR-0002 escalation cost guards. CONFIDENCE_THRESHOLD is a placeholder trigger
-# for the P3-2 seam; P3-3 replaces it with the tuned threshold + explicit
-# user-cue trigger and exposes both as dev-panel knobs. Verified live
-# (2026-07-25 spike): this model handles direct video at ~88 tokens/sec, so a
-# 30s window costs ~2,640 tokens — cheap enough that only ONE escalation per
-# plan call is needed, not a budget to spend carefully.
-ESCALATION_CONFIDENCE_THRESHOLD = 0.6
+# ADR-0002 escalation cost guards. Verified live (2026-07-25 spike): this model
+# handles direct video at ~88 tokens/sec, so a 30s window costs ~2,640 tokens —
+# cheap enough that only ONE escalation per plan call is needed, not a budget to
+# spend carefully.
 ESCALATION_MAX_WINDOW_SEC = 30.0
+# P3-3: the trigger is user-cue-first, confidence-second. A P3-2 live test showed
+# the model's self-reported confidence stays high (0.95) even when WRONG on a
+# sampling-gap case — it doesn't "know what it doesn't know" from sparse sprites
+# alone. So an explicit ask for precision is the primary signal; the confidence
+# threshold is a secondary catch for cases the model itself flags as unsure.
+# Both are tunable per-request (dev panel slider, Design Handoff Part 3) with
+# this as the fallback default.
+ESCALATION_CONFIDENCE_THRESHOLD_DEFAULT = 0.6
+_ESCALATION_CUE_KEYWORDS = re.compile(
+    r"\b(exact(?:ly)?|precise(?:ly)?|pinpoint|frame[- ]accurate|"
+    r"to the (?:second|frame)|the (?:exact|precise) (?:moment|second|point|spot))\b",
+    re.IGNORECASE,
+)
 _SILENCE_KEYWORDS = re.compile(
     r"\b(dead\s*air|silence|silent|pause[s]?|awkward gap[s]?)\b", re.IGNORECASE
 )
@@ -43,6 +53,10 @@ _SILENCE_KEYWORDS = re.compile(
 
 def _wants_silence_removal(prompt: str) -> bool:
     return bool(_SILENCE_KEYWORDS.search(prompt))
+
+
+def _wants_precise_escalation(prompt: str) -> bool:
+    return bool(_ESCALATION_CUE_KEYWORDS.search(prompt))
 
 
 def _silence_proposals(silences: list[tuple[float, float]]) -> list[dict]:
@@ -215,7 +229,10 @@ def _normalize_suggestions(raw_suggestions: list, duration_sec: float) -> list[d
     return normalized
 
 
-async def _call_gemini(api_key: str, parts: list[dict]) -> dict:
+async def _call_gemini(api_key: str, parts: list[dict]) -> tuple[dict, Optional[int]]:
+    """Returns (parsed JSON body, total token count if the API reported one).
+    Token count feeds the dev panel's running totals (Design Handoff Part 3) —
+    real usage, not the pre-call token_service.py estimate."""
     payload = {
         "contents": [{"parts": parts}],
         "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
@@ -230,16 +247,23 @@ async def _call_gemini(api_key: str, parts: list[dict]) -> dict:
         data = response.json()
     text = data["candidates"][0]["content"]["parts"][0]["text"]
     logger.info("GEMINI_RAW_PLAN_RESPONSE %s", text)
-    return _extract_json(text)
+    tokens_used = data.get("usageMetadata", {}).get("totalTokenCount")
+    return _extract_json(text), tokens_used
 
 
 async def _escalate(
-    *, api_key: str, candidate: dict, duration_sec: float, source_path: Path
-) -> Optional[dict]:
+    *,
+    api_key: str,
+    candidate: dict,
+    duration_sec: float,
+    source_path: Path,
+    trigger: str,
+) -> Optional[tuple[dict, dict]]:
     """Scoped direct-video escalation (ADR-0002): re-perceive a short window around
-    a low-confidence proposal as real video, for a frame-accurate cut the sparse
-    coarse pass couldn't locate. Returns a replacement proposal, or None if the
-    window/extraction/call/parse doesn't produce anything usable."""
+    a proposal as real video, for a frame-accurate cut the sparse coarse pass
+    couldn't locate. Returns (replacement proposal, escalation event for the dev
+    panel), or None if the window/extraction/call/parse doesn't produce anything
+    usable."""
     center = (candidate["start_sec"] + candidate["end_sec"]) / 2
     window_end = min(duration_sec, center + ESCALATION_MAX_WINDOW_SEC / 2)
     window_start = max(0.0, window_end - ESCALATION_MAX_WINDOW_SEC)
@@ -270,7 +294,7 @@ async def _escalate(
         )
         try:
             video_part = await asyncio.to_thread(_encode_video_clip, clip_path)
-            parsed = await _call_gemini(api_key, perceive(text=text, video_part=video_part))
+            parsed, tokens_used = await _call_gemini(api_key, perceive(text=text, video_part=video_part))
         except Exception:
             logger.exception("ESCALATION_CALL_FAILED")
             return None
@@ -284,7 +308,15 @@ async def _escalate(
     best["end_sec"] = round(best["end_sec"] + window_start, 3)
     best["reason"] = f"{best['reason']} (escalated: direct-video zoom-in for precision)"
     best["confidence"] = max(best["confidence"], candidate["confidence"])
-    return best
+
+    event = {
+        "window_start_sec": round(window_start, 3),
+        "window_end_sec": round(window_end, 3),
+        "trigger": trigger,
+        "confidence_before": candidate["confidence"],
+        "tokens_used": tokens_used,
+    }
+    return best, event
 
 
 async def plan_edits(
@@ -301,15 +333,23 @@ async def plan_edits(
     sprite_job_id: Optional[str] = None,
     sprites_dir: Optional[Path] = None,
     uploads_dir: Optional[Path] = None,
+    escalation_confidence_threshold: Optional[float] = None,
 ) -> dict:
     """Plan -> validate -> propose (ADR-0003). One bounded self-correction retry
     if the model's first attempt yields zero valid proposals; falls back to the
-    regex heuristic only if that retry also fails. If the least-confident coarse
-    proposal is still below threshold, escalates once (ADR-0002/P3-2): a scoped
-    direct-video re-perceive of just that window for a frame-accurate cut.
-    Silence/dead-air detection (X5) is a deterministic FFmpeg tool that runs
-    independently of Gemini and merges its proposals in regardless of which
-    path produced the rest."""
+    regex heuristic only if that retry also fails. Escalates once (ADR-0002/P3-3):
+    a scoped direct-video re-perceive of the least-confident proposal's window,
+    triggered by an explicit precision cue in the prompt (primary — the model
+    doesn't reliably self-report low confidence on sampling-gap uncertainty) or a
+    confidence threshold (secondary catch-all, dev-panel tunable via
+    escalation_confidence_threshold). Silence/dead-air detection (X5) is a
+    deterministic FFmpeg tool that runs independently of Gemini and merges its
+    proposals in regardless of which path produced the rest."""
+    confidence_threshold = (
+        escalation_confidence_threshold
+        if escalation_confidence_threshold is not None
+        else ESCALATION_CONFIDENCE_THRESHOLD_DEFAULT
+    )
     plan_id = str(uuid4())
     api_key = os.getenv("GEMINI_API_KEY")
     sprite_files: list[Path] = []
@@ -352,6 +392,8 @@ async def plan_edits(
             "strategy": "rule-based",
             "reasoning": "No Gemini API key configured; parsed the prompt with regex heuristics.",
             "proposals": [{**item, "id": str(uuid4())} for item in fallback_suggestions],
+            "tokens_used": None,
+            "escalation": None,
         }
         logger.info("PLAN_EDITS_FALLBACK_RESPONSE %s", result)
         return result
@@ -407,7 +449,7 @@ async def plan_edits(
 
     strategy = "sprite-vision" if sprite_files else "sprite-summary-prompt"
     parts = perceive(text=text_part, image_parts=image_parts)
-    parsed = await _call_gemini(api_key, parts)
+    parsed, tokens_used = await _call_gemini(api_key, parts)
     raw_suggestions = parsed.get("suggestions", [])
     reasoning = str(parsed.get("reasoning") or "").strip()
     normalized = _normalize_suggestions(raw_suggestions, duration_sec)
@@ -427,30 +469,38 @@ async def plan_edits(
             }
         )
         try:
-            retry_parsed = await _call_gemini(api_key, retry_parts)
+            retry_parsed, retry_tokens_used = await _call_gemini(api_key, retry_parts)
             raw_suggestions = retry_parsed.get("suggestions", [])
             reasoning = str(retry_parsed.get("reasoning") or reasoning).strip()
             normalized = _normalize_suggestions(raw_suggestions, duration_sec)
+            if retry_tokens_used is not None:
+                tokens_used = (tokens_used or 0) + retry_tokens_used
         except Exception:
             logger.exception("PLAN_EDITS_SELF_CORRECTION_FAILED")
 
-    # Scoped escalation (ADR-0002/P3-2): if the coarse pass's least-confident
-    # proposal is below threshold, zoom in on just that window with real video for
-    # a frame-accurate cut. At most one escalation per plan call (cost guard).
+    # Scoped escalation (ADR-0002/P3-3): trigger is user-cue-first (explicit ask
+    # for precision), confidence-threshold second (catches the model's own
+    # low-confidence flags). At most one escalation per plan call (cost guard).
+    escalation_event: Optional[dict] = None
     if normalized and sprite_job_id and uploads_dir:
         worst_idx, worst = min(enumerate(normalized), key=lambda pair: pair[1]["confidence"])
-        if worst["confidence"] < ESCALATION_CONFIDENCE_THRESHOLD:
+        wants_precision = _wants_precise_escalation(prompt)
+        if wants_precision or worst["confidence"] < confidence_threshold:
             source_path = await asyncio.to_thread(find_persisted_upload, uploads_dir, sprite_job_id)
             if source_path is not None:
-                replacement = await _escalate(
+                escalated = await _escalate(
                     api_key=api_key,
                     candidate=worst,
                     duration_sec=duration_sec,
                     source_path=source_path,
+                    trigger="user_cue" if wants_precision else "low_confidence",
                 )
-                if replacement is not None:
+                if escalated is not None:
+                    replacement, escalation_event = escalated
                     normalized[worst_idx] = replacement
                     strategy = f"{strategy}+escalation"
+                    if escalation_event["tokens_used"] is not None:
+                        tokens_used = (tokens_used or 0) + escalation_event["tokens_used"]
 
     if not normalized:
         normalized = _fallback_suggest_cuts(prompt, duration_sec)
@@ -466,6 +516,8 @@ async def plan_edits(
         "strategy": strategy,
         "reasoning": reasoning,
         "proposals": [{**item, "id": str(uuid4())} for item in normalized + silence_suggestions],
+        "tokens_used": tokens_used,
+        "escalation": escalation_event,
     }
     logger.info("PLAN_EDITS_NORMALIZED_RESPONSE %s", result)
     return result

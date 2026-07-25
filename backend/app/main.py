@@ -373,6 +373,7 @@ async def agent_plan(payload: AgentPlanRequest) -> AgentPlanResponse:
             sprite_job_id=payload.sprite_job_id,
             sprites_dir=SPRITES_DIR,
             uploads_dir=UPLOAD_DIR,
+            escalation_confidence_threshold=payload.escalation_confidence_threshold,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -383,6 +384,8 @@ async def agent_plan(payload: AgentPlanRequest) -> AgentPlanResponse:
         proposals=result["proposals"],
         model=result["model"],
         strategy=result["strategy"],
+        tokens_used=result.get("tokens_used"),
+        escalation=result.get("escalation"),
     )
 
 

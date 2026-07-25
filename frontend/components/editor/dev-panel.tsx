@@ -12,6 +12,14 @@ type TokenEstimateResponse = {
     notes: string[];
 };
 
+type EscalationEvent = {
+    window_start_sec: number;
+    window_end_sec: number;
+    trigger: "user_cue" | "low_confidence";
+    confidence_before: number;
+    tokens_used: number | null;
+};
+
 type DevPanelProps = {
     isOpen: boolean;
     onClose: () => void;
@@ -19,14 +27,27 @@ type DevPanelProps = {
     isEstimating: boolean;
     onEstimate: () => void;
     canEstimate: boolean;
+    escalationEvents: EscalationEvent[];
+    sessionTokensUsed: number;
+    escalationThreshold: number;
+    onEscalationThresholdChange: (value: number) => void;
 };
 
 // Hidden by default (Design Handoff Part 3): internal tool for tuning cost levers
-// (sprite interval/thumb_width via the token estimate), not a creator-facing feature.
-// The "escalation events" section this was designed alongside (System Design §5's
-// direct-video escalation, X1b) hasn't been built yet — that section is an honest
-// placeholder rather than fabricated data for a feature that doesn't exist.
-export function DevPanel({ isOpen, onClose, tokenEstimate, isEstimating, onEstimate, canEstimate }: DevPanelProps) {
+// (sprite interval/thumb_width via the token estimate, escalation threshold) and
+// watching real escalation events (ADR-0002/P3-3), not a creator-facing feature.
+export function DevPanel({
+    isOpen,
+    onClose,
+    tokenEstimate,
+    isEstimating,
+    onEstimate,
+    canEstimate,
+    escalationEvents,
+    sessionTokensUsed,
+    escalationThreshold,
+    onEscalationThresholdChange,
+}: DevPanelProps) {
     return (
         <div
             className={`fixed inset-y-0 right-0 z-50 w-80 transform border-l border-white/10 bg-zinc-950/95 p-4 backdrop-blur-xl transition-transform duration-200 ease ${
@@ -83,11 +104,59 @@ export function DevPanel({ isOpen, onClose, tokenEstimate, isEstimating, onEstim
                 </section>
 
                 <section>
-                    <h3 className="font-semibold text-zinc-300">Escalation events</h3>
-                    <p className="mt-2 text-[11px] text-zinc-500">
-                        Not implemented yet — the direct-video escalation tool (System Design §5, roadmap X1b)
-                        has not shipped, so there is nothing to inspect here.
+                    <h3 className="font-semibold text-zinc-300">Escalation threshold</h3>
+                    <div className="mt-2 flex items-center gap-2">
+                        <input
+                            type="range"
+                            min={0}
+                            max={1}
+                            step={0.05}
+                            value={escalationThreshold}
+                            onChange={(e) => onEscalationThresholdChange(Number(e.target.value))}
+                            className="w-full accent-amber-400"
+                            aria-label="Escalation confidence threshold"
+                        />
+                        <span className="font-mono text-zinc-100">{escalationThreshold.toFixed(2)}</span>
+                    </div>
+                    <p className="mt-1 text-[11px] text-zinc-500">
+                        Applies to the next plan call this session only, not persisted.
                     </p>
+                </section>
+
+                <section>
+                    <h3 className="font-semibold text-zinc-300">Running totals</h3>
+                    <p className="mt-2 font-mono text-zinc-100">
+                        {sessionTokensUsed.toLocaleString()} tokens this session
+                    </p>
+                </section>
+
+                <section>
+                    <h3 className="font-semibold text-zinc-300">Escalation events</h3>
+                    {escalationEvents.length === 0 ? (
+                        <p className="mt-2 text-[11px] text-zinc-500">No escalations this session.</p>
+                    ) : (
+                        <div className="mt-2 space-y-1.5">
+                            {escalationEvents.map((event, i) => (
+                                <div
+                                    key={i}
+                                    className="rounded border border-white/[0.06] bg-white/[0.03] p-2 text-[11px]"
+                                >
+                                    <div className="flex items-center justify-between">
+                                        <span className="font-mono text-zinc-100">
+                                            {event.window_start_sec.toFixed(1)}s &rarr; {event.window_end_sec.toFixed(1)}s
+                                        </span>
+                                        <span className="rounded border border-white/[0.08] bg-white/[0.05] px-1 py-px uppercase tracking-wide text-zinc-400">
+                                            {event.trigger === "user_cue" ? "user cue" : "low confidence"}
+                                        </span>
+                                    </div>
+                                    <p className="mt-1 text-zinc-400">
+                                        Confidence before: {event.confidence_before.toFixed(2)}
+                                        {event.tokens_used != null ? ` · ${event.tokens_used.toLocaleString()} tokens` : ""}
+                                    </p>
+                                </div>
+                            ))}
+                        </div>
+                    )}
                 </section>
             </div>
         </div>

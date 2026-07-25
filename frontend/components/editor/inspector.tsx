@@ -59,12 +59,22 @@ type CutSuggestion = {
     speed_multiplier?: number | null;
 };
 
+type EscalationEvent = {
+    window_start_sec: number;
+    window_end_sec: number;
+    trigger: "user_cue" | "low_confidence";
+    confidence_before: number;
+    tokens_used: number | null;
+};
+
 type AgentPlanResponse = {
     plan_id: string;
     reasoning: string;
     proposals: CutSuggestion[];
     model: string;
     strategy: string;
+    tokens_used: number | null;
+    escalation: EscalationEvent | null;
 };
 
 type ProposalStatus = "pending" | "accepted" | "rejected";
@@ -273,6 +283,11 @@ export function Inspector() {
     const [isSuggesting, setIsSuggesting] = useState(false);
     const [isExporting, setIsExporting] = useState(false);
     const [exportResult, setExportResult] = useState<ExportResponse | null>(null);
+    // Dev-panel-only (Design Handoff Part 3): session log of real escalation events
+    // and a live-adjustable threshold override, not persisted, not creator-facing.
+    const [escalationEvents, setEscalationEvents] = useState<EscalationEvent[]>([]);
+    const [sessionTokensUsed, setSessionTokensUsed] = useState(0);
+    const [escalationThreshold, setEscalationThreshold] = useState(0.6);
     const [isDevPanelOpen, setIsDevPanelOpen] = useState(
         () => process.env.NEXT_PUBLIC_DEV_PANEL === "true"
     );
@@ -387,6 +402,7 @@ export function Inspector() {
                     conversation_summary: buildConversationSummary(nextMessages),
                     trim_ranges: trimRanges,
                     speed_ranges: speedRanges,
+                    escalation_confidence_threshold: escalationThreshold,
                 }),
             });
             const data = (await response.json()) as AgentPlanResponse | { detail?: string };
@@ -402,6 +418,12 @@ export function Inspector() {
                 status: "pending",
             }));
             setProposals((prev) => [...prev, ...nextProposals]);
+            if (result.tokens_used) {
+                setSessionTokensUsed((prev) => prev + (result.tokens_used ?? 0));
+            }
+            if (result.escalation) {
+                setEscalationEvents((prev) => [result.escalation as EscalationEvent, ...prev]);
+            }
             setMessages((prev) => [
                 ...prev,
                 {
@@ -938,6 +960,10 @@ export function Inspector() {
             isEstimating={isEstimating}
             onEstimate={handleEstimateTokens}
             canEstimate={Boolean(sourceFile) && !isVideoTooLong}
+            escalationEvents={escalationEvents}
+            sessionTokensUsed={sessionTokensUsed}
+            escalationThreshold={escalationThreshold}
+            onEscalationThresholdChange={setEscalationThreshold}
         />
         </>
     );

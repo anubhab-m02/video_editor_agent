@@ -88,6 +88,17 @@ class AgentPlanRequest(BaseModel):
     conversation_summary: Optional[str] = None
     trim_ranges: list[TrimRange] = Field(default_factory=list)
     speed_ranges: list[SpeedRangeInput] = Field(default_factory=list)
+    # Dev-panel-only override (Design Handoff Part 3): live-adjustable escalation
+    # threshold for this call, not persisted; falls back to the server default.
+    escalation_confidence_threshold: Optional[float] = Field(default=None, ge=0, le=1)
+
+
+class EscalationEvent(BaseModel):
+    window_start_sec: float
+    window_end_sec: float
+    trigger: Literal["user_cue", "low_confidence"]
+    confidence_before: float
+    tokens_used: Optional[int] = None
 
 
 class AgentPlanResponse(BaseModel):
@@ -96,6 +107,8 @@ class AgentPlanResponse(BaseModel):
     proposals: list[EditSuggestion]
     model: str
     strategy: str
+    tokens_used: Optional[int] = None
+    escalation: Optional[EscalationEvent] = None
 
 
 class ExportResponse(BaseModel):

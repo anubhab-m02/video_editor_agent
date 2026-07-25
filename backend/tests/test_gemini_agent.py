@@ -356,6 +356,116 @@ def test_plan_edits_escalates_low_confidence_proposal(tmp_path, monkeypatch):
     assert proposal["end_sec"] == 26.0
     assert "escalated" in proposal["reason"].lower()
     assert proposal["confidence"] == 0.95
+    # Prompt contains "exact" -> user_cue fires (also independently true here since
+    # confidence 0.4 is below the default threshold too, but user_cue takes priority).
+    assert result["escalation"]["trigger"] == "user_cue"
+    assert result["escalation"]["window_start_sec"] == 17.0
+    assert result["escalation"]["window_end_sec"] == 47.0
+    assert result["escalation"]["confidence_before"] == 0.4
+
+
+def test_plan_edits_escalates_on_confidence_alone_without_cue(tmp_path, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    sprites_dir = _make_sheets(tmp_path, "job10", 3)
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir()
+    (uploads_dir / "job10.mp4").write_bytes(b"fake-video-bytes")
+
+    monkeypatch.setattr(
+        gemini_agent, "extract_range", lambda input_path, output_dir, start_sec, end_sec: input_path
+    )
+    monkeypatch.setattr(
+        gemini_agent, "_encode_video_clip", lambda path: {"inline_data": {"mime_type": "video/mp4", "data": "FAKE"}}
+    )
+
+    call_count = {"n": 0}
+
+    async def fake_post(self, url, json=None, headers=None):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return _FakeResponse(
+                _gemini_json_response(
+                    [{"action": "trim_video", "start_sec": 30.0, "end_sec": 34.0, "reason": "unsure", "confidence": 0.3}]
+                )
+            )
+        return _FakeResponse(
+            _gemini_json_response(
+                [{"action": "trim_video", "start_sec": 5.0, "end_sec": 9.0, "reason": "refined", "confidence": 0.9}]
+            )
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    # No precision cue words in this prompt — only the confidence threshold can trigger.
+    result = asyncio.run(
+        gemini_agent.plan_edits(
+            prompt="cut the boring part",
+            duration_sec=60.0,
+            sprite_interval_sec=1.0,
+            total_frames=60,
+            sheets_count=1,
+            sprite_job_id="job10",
+            sprites_dir=sprites_dir,
+            uploads_dir=uploads_dir,
+        )
+    )
+
+    assert call_count["n"] == 2
+    assert result["strategy"] == "sprite-vision+escalation"
+    assert result["escalation"]["trigger"] == "low_confidence"
+
+
+def test_plan_edits_escalation_threshold_override_forces_escalation(tmp_path, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    sprites_dir = _make_sheets(tmp_path, "job11", 3)
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir()
+    (uploads_dir / "job11.mp4").write_bytes(b"fake-video-bytes")
+
+    monkeypatch.setattr(
+        gemini_agent, "extract_range", lambda input_path, output_dir, start_sec, end_sec: input_path
+    )
+    monkeypatch.setattr(
+        gemini_agent, "_encode_video_clip", lambda path: {"inline_data": {"mime_type": "video/mp4", "data": "FAKE"}}
+    )
+
+    call_count = {"n": 0}
+
+    async def fake_post(self, url, json=None, headers=None):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # Confidence 0.8 clears the default threshold (0.6) and has no cue word —
+            # would NOT escalate without the dev-panel override.
+            return _FakeResponse(
+                _gemini_json_response(
+                    [{"action": "trim_video", "start_sec": 4.0, "end_sec": 8.0, "reason": "fairly sure", "confidence": 0.8}]
+                )
+            )
+        return _FakeResponse(
+            _gemini_json_response(
+                [{"action": "trim_video", "start_sec": 1.0, "end_sec": 2.0, "reason": "refined", "confidence": 0.9}]
+            )
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    result = asyncio.run(
+        gemini_agent.plan_edits(
+            prompt="cut the boring part",
+            duration_sec=60.0,
+            sprite_interval_sec=1.0,
+            total_frames=60,
+            sheets_count=1,
+            sprite_job_id="job11",
+            sprites_dir=sprites_dir,
+            uploads_dir=uploads_dir,
+            escalation_confidence_threshold=0.95,
+        )
+    )
+
+    assert call_count["n"] == 2
+    assert result["strategy"] == "sprite-vision+escalation"
+    assert result["escalation"]["trigger"] == "low_confidence"
 
 
 def test_plan_edits_does_not_escalate_high_confidence_proposal(tmp_path, monkeypatch):
