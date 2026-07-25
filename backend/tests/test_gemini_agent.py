@@ -337,7 +337,7 @@ def test_plan_edits_escalates_low_confidence_proposal(tmp_path, monkeypatch):
     result = asyncio.run(
         gemini_agent.plan_edits(
             prompt="find the exact boring moment",
-            duration_sec=60.0,
+            duration_sec=180.0,  # above DIRECT_VIDEO_MAX_DURATION_SEC to exercise the sprite+escalation path
             sprite_interval_sec=1.0,
             total_frames=60,
             sheets_count=1,
@@ -400,7 +400,7 @@ def test_plan_edits_escalates_on_confidence_alone_without_cue(tmp_path, monkeypa
     result = asyncio.run(
         gemini_agent.plan_edits(
             prompt="cut the boring part",
-            duration_sec=60.0,
+            duration_sec=180.0,  # above DIRECT_VIDEO_MAX_DURATION_SEC to exercise the sprite+escalation path
             sprite_interval_sec=1.0,
             total_frames=60,
             sheets_count=1,
@@ -452,7 +452,7 @@ def test_plan_edits_escalation_threshold_override_forces_escalation(tmp_path, mo
     result = asyncio.run(
         gemini_agent.plan_edits(
             prompt="cut the boring part",
-            duration_sec=60.0,
+            duration_sec=180.0,  # above DIRECT_VIDEO_MAX_DURATION_SEC to exercise the sprite+escalation path
             sprite_interval_sec=1.0,
             total_frames=60,
             sheets_count=1,
@@ -502,7 +502,7 @@ def test_plan_edits_does_not_escalate_high_confidence_proposal(tmp_path, monkeyp
     result = asyncio.run(
         gemini_agent.plan_edits(
             prompt="cut the boring part",
-            duration_sec=60.0,
+            duration_sec=180.0,  # above DIRECT_VIDEO_MAX_DURATION_SEC to exercise the sprite+escalation path
             sprite_interval_sec=1.0,
             total_frames=60,
             sheets_count=1,
@@ -515,3 +515,90 @@ def test_plan_edits_does_not_escalate_high_confidence_proposal(tmp_path, monkeyp
     assert called["n"] == 0
     assert result["strategy"] == "sprite-vision"
     assert result["proposals"][0]["confidence"] == 0.9
+
+
+def test_plan_edits_uses_direct_video_for_short_clip(tmp_path, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir()
+    (uploads_dir / "job12.mp4").write_bytes(b"fake-video-bytes")
+
+    escalate_called = {"n": 0}
+    monkeypatch.setattr(
+        gemini_agent,
+        "_escalate",
+        lambda **kw: escalate_called.__setitem__("n", escalate_called["n"] + 1),
+    )
+
+    captured = {}
+
+    async def fake_post(self, url, json=None, headers=None):
+        captured["payload"] = json
+        return _FakeResponse(
+            _gemini_json_response(
+                [{"action": "trim_video", "start_sec": 4.0, "end_sec": 8.0, "reason": "actual combat", "confidence": 0.6}]
+            )
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    result = asyncio.run(
+        gemini_agent.plan_edits(
+            prompt="find the kills",
+            duration_sec=46.5,  # below DIRECT_VIDEO_MAX_DURATION_SEC
+            sprite_interval_sec=1.0,
+            total_frames=46,
+            sheets_count=1,
+            sprite_job_id="job12",
+            uploads_dir=uploads_dir,
+        )
+    )
+
+    parts = captured["payload"]["contents"][0]["parts"]
+    video_parts = [p for p in parts if "inline_data" in p and p["inline_data"]["mime_type"] == "video/mp4"]
+    image_parts = [p for p in parts if "inline_data" in p and p["inline_data"]["mime_type"] == "image/png"]
+    assert len(video_parts) == 1
+    assert len(image_parts) == 0
+    assert result["strategy"] == "direct-video"
+    # Escalation makes no sense here — the model already saw the whole clip directly.
+    assert escalate_called["n"] == 0
+
+
+def test_plan_edits_uses_sprites_for_long_clip(tmp_path, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    sprites_dir = _make_sheets(tmp_path, "job13", 3)
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir()
+    (uploads_dir / "job13.mp4").write_bytes(b"fake-video-bytes")
+
+    captured = {}
+
+    async def fake_post(self, url, json=None, headers=None):
+        captured["payload"] = json
+        return _FakeResponse(
+            _gemini_json_response(
+                [{"action": "trim_video", "start_sec": 4.0, "end_sec": 8.0, "reason": "boring", "confidence": 0.9}]
+            )
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    result = asyncio.run(
+        gemini_agent.plan_edits(
+            prompt="find the kills",
+            duration_sec=180.0,  # above DIRECT_VIDEO_MAX_DURATION_SEC
+            sprite_interval_sec=1.0,
+            total_frames=180,
+            sheets_count=1,
+            sprite_job_id="job13",
+            sprites_dir=sprites_dir,
+            uploads_dir=uploads_dir,
+        )
+    )
+
+    parts = captured["payload"]["contents"][0]["parts"]
+    video_parts = [p for p in parts if "inline_data" in p and p["inline_data"]["mime_type"] == "video/mp4"]
+    image_parts = [p for p in parts if "inline_data" in p and p["inline_data"]["mime_type"] == "image/png"]
+    assert len(video_parts) == 0
+    assert len(image_parts) == 3
+    assert result["strategy"] == "sprite-vision"

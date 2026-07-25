@@ -33,6 +33,13 @@ GEMINI_URL = (
 # cheap enough that only ONE escalation per plan call is needed, not a budget to
 # spend carefully.
 ESCALATION_MAX_WINDOW_SEC = 30.0
+# Below this duration, skip sprite thumbnails entirely and send the whole video
+# directly. At ~88 tok/s (verified), a 120s clip costs only ~10.5K tokens — cheap
+# enough that sprite-vision's cost-bounding no longer matters, and real
+# motion/audio fixes classification errors (e.g. "downtime" vs "combat") a
+# coarse sprite pass can't judge from isolated stills. Escalation is skipped on
+# this path — the model already saw everything, there's nothing to zoom into.
+DIRECT_VIDEO_MAX_DURATION_SEC = 120.0
 # P3-3: the trigger is user-cue-first, confidence-second. A P3-2 live test showed
 # the model's self-reported confidence stays high (0.95) even when WRONG on a
 # sampling-gap case — it doesn't "know what it doesn't know" from sparse sprites
@@ -335,12 +342,15 @@ async def plan_edits(
     uploads_dir: Optional[Path] = None,
     escalation_confidence_threshold: Optional[float] = None,
 ) -> dict:
-    """Plan -> validate -> propose (ADR-0003). One bounded self-correction retry
-    if the model's first attempt yields zero valid proposals; falls back to the
-    regex heuristic only if that retry also fails. Escalates once (ADR-0002/P3-3):
-    a scoped direct-video re-perceive of the least-confident proposal's window,
-    triggered by an explicit precision cue in the prompt (primary — the model
-    doesn't reliably self-report low confidence on sampling-gap uncertainty) or a
+    """Plan -> validate -> propose (ADR-0003). Below DIRECT_VIDEO_MAX_DURATION_SEC,
+    the coarse pass itself uses the whole video directly (real motion/audio, no
+    escalation needed); above it, uses sprite thumbnails with scoped escalation.
+    One bounded self-correction retry if the model's first attempt yields zero
+    valid proposals; falls back to the regex heuristic only if that retry also
+    fails. On the sprite path, escalates once (ADR-0002/P3-3): a scoped
+    direct-video re-perceive of the least-confident proposal's window, triggered
+    by an explicit precision cue in the prompt (primary — the model doesn't
+    reliably self-report low confidence on sampling-gap uncertainty) or a
     confidence threshold (secondary catch-all, dev-panel tunable via
     escalation_confidence_threshold). Silence/dead-air detection (X5) is a
     deterministic FFmpeg tool that runs independently of Gemini and merges its
@@ -352,21 +362,33 @@ async def plan_edits(
     )
     plan_id = str(uuid4())
     api_key = os.getenv("GEMINI_API_KEY")
+
+    source_path: Optional[Path] = None
+    if sprite_job_id and uploads_dir:
+        source_path = await asyncio.to_thread(find_persisted_upload, uploads_dir, sprite_job_id)
+
+    use_direct_video = False
+    direct_video_part: Optional[dict] = None
+    if api_key and source_path is not None and duration_sec <= DIRECT_VIDEO_MAX_DURATION_SEC:
+        try:
+            direct_video_part = await asyncio.to_thread(_encode_video_clip, source_path)
+            use_direct_video = True
+        except Exception:
+            logger.exception("DIRECT_VIDEO_ENCODE_FAILED")
+
     sprite_files: list[Path] = []
-    if api_key and sprite_job_id and sprites_dir:
+    if not use_direct_video and api_key and sprite_job_id and sprites_dir:
         sprite_files = await asyncio.to_thread(
             _select_sprite_files, sprites_dir, sprite_job_id, MAX_SPRITE_IMAGES
         )
 
     silence_suggestions: list[dict] = []
-    if _wants_silence_removal(prompt) and sprite_job_id and uploads_dir:
-        source_path = await asyncio.to_thread(find_persisted_upload, uploads_dir, sprite_job_id)
-        if source_path is not None:
-            try:
-                silences = await asyncio.to_thread(detect_silence, source_path)
-                silence_suggestions = _silence_proposals(silences)
-            except Exception:
-                logger.exception("SILENCE_DETECTION_FAILED")
+    if _wants_silence_removal(prompt) and source_path is not None:
+        try:
+            silences = await asyncio.to_thread(detect_silence, source_path)
+            silence_suggestions = _silence_proposals(silences)
+        except Exception:
+            logger.exception("SILENCE_DETECTION_FAILED")
 
     logger.info(
         "PLAN_EDITS_REQUEST %s",
@@ -382,6 +404,7 @@ async def plan_edits(
             "speed_ranges_count": len(speed_ranges or []),
             "sprite_images_attached": len(sprite_files),
             "silence_proposals": len(silence_suggestions),
+            "used_direct_video": use_direct_video,
         },
     )
     if not api_key:
@@ -439,16 +462,27 @@ async def plan_edits(
 
     text_part = f"{instructions}\n{context_block}\nUser prompt: {prompt}"
     image_parts: Optional[list[dict]] = None
-    if sprite_files:
+    coarse_video_part: Optional[dict] = None
+    if use_direct_video:
+        text_part += (
+            f"\nAttached: the full {duration_sec:.1f}s video. Watch the actual motion and audio "
+            "directly — this is real footage, not thumbnails — to judge what's really happening "
+            "(e.g. actual combat vs. downtime), not just what a still frame might suggest."
+        )
+        coarse_video_part = direct_video_part
+        strategy = "direct-video"
+    elif sprite_files:
         text_part += (
             f"\nAttached: {len(sprite_files)} sprite-sheet thumbnail images, sampled evenly "
             f"in chronological order across the full {duration_sec:.1f}s video. Use their visual "
             "content (not just the metadata above) to find real cut points."
         )
         image_parts = await asyncio.to_thread(_encode_sprite_images, sprite_files)
+        strategy = "sprite-vision"
+    else:
+        strategy = "sprite-summary-prompt"
 
-    strategy = "sprite-vision" if sprite_files else "sprite-summary-prompt"
-    parts = perceive(text=text_part, image_parts=image_parts)
+    parts = perceive(text=text_part, image_parts=image_parts, video_part=coarse_video_part)
     parsed, tokens_used = await _call_gemini(api_key, parts)
     raw_suggestions = parsed.get("suggestions", [])
     reasoning = str(parsed.get("reasoning") or "").strip()
@@ -481,26 +515,26 @@ async def plan_edits(
     # Scoped escalation (ADR-0002/P3-3): trigger is user-cue-first (explicit ask
     # for precision), confidence-threshold second (catches the model's own
     # low-confidence flags). At most one escalation per plan call (cost guard).
+    # Skipped when the coarse pass already used direct video (use_direct_video) —
+    # the model already saw everything, there's no coarse localization to refine.
     escalation_event: Optional[dict] = None
-    if normalized and sprite_job_id and uploads_dir:
+    if normalized and not use_direct_video and source_path is not None:
         worst_idx, worst = min(enumerate(normalized), key=lambda pair: pair[1]["confidence"])
         wants_precision = _wants_precise_escalation(prompt)
         if wants_precision or worst["confidence"] < confidence_threshold:
-            source_path = await asyncio.to_thread(find_persisted_upload, uploads_dir, sprite_job_id)
-            if source_path is not None:
-                escalated = await _escalate(
-                    api_key=api_key,
-                    candidate=worst,
-                    duration_sec=duration_sec,
-                    source_path=source_path,
-                    trigger="user_cue" if wants_precision else "low_confidence",
-                )
-                if escalated is not None:
-                    replacement, escalation_event = escalated
-                    normalized[worst_idx] = replacement
-                    strategy = f"{strategy}+escalation"
-                    if escalation_event["tokens_used"] is not None:
-                        tokens_used = (tokens_used or 0) + escalation_event["tokens_used"]
+            escalated = await _escalate(
+                api_key=api_key,
+                candidate=worst,
+                duration_sec=duration_sec,
+                source_path=source_path,
+                trigger="user_cue" if wants_precision else "low_confidence",
+            )
+            if escalated is not None:
+                replacement, escalation_event = escalated
+                normalized[worst_idx] = replacement
+                strategy = f"{strategy}+escalation"
+                if escalation_event["tokens_used"] is not None:
+                    tokens_used = (tokens_used or 0) + escalation_event["tokens_used"]
 
     if not normalized:
         normalized = _fallback_suggest_cuts(prompt, duration_sec)
