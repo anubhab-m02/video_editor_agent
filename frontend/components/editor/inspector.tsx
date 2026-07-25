@@ -271,6 +271,14 @@ export function applyProposalRejectAll(proposals: Proposal[]): Proposal[] {
     return proposals.map((p) => (p.status === "pending" ? { ...p, status: "rejected" } : p));
 }
 
+// Each /agent/plan call is a full fresh re-analysis, not an addendum to the last
+// one — it supersedes whatever from the previous turn is still pending
+// (unactioned). Already accepted/rejected proposals are the user's real
+// decisions and are kept regardless.
+export function mergeNewProposals(existing: Proposal[], incoming: Proposal[]): Proposal[] {
+    return [...existing.filter((p) => p.status !== "pending"), ...incoming];
+}
+
 export function Inspector() {
     const { sourceFile, duration, trimRanges, speedRanges, setTrimRanges, setSpeedRanges } = useVideo();
     const [messages, setMessages] = useState<ChatMessage[]>(PLACEHOLDER_MESSAGES);
@@ -417,7 +425,7 @@ export function Inspector() {
                 ...s,
                 status: "pending",
             }));
-            setProposals((prev) => [...prev, ...nextProposals]);
+            setProposals((prev) => mergeNewProposals(prev, nextProposals));
             if (result.tokens_used) {
                 setSessionTokensUsed((prev) => prev + (result.tokens_used ?? 0));
             }

@@ -6,6 +6,7 @@ import {
   applyProposalReject,
   applyProposalRejectAll,
   applyProposalUndo,
+  mergeNewProposals,
 } from "./inspector";
 
 function trimProposal(overrides: Partial<Record<string, unknown>> = {}) {
@@ -121,5 +122,22 @@ describe("applyProposalAcceptAll", () => {
     expect(result.speedRanges).toEqual([]);
     expect(result.proposals[0].status).toBe("accepted");
     expect(result.proposals[1].status).toBe("rejected");
+  });
+});
+
+describe("mergeNewProposals", () => {
+  it("drops old pending proposals when a new plan call arrives", () => {
+    const stale = trimProposal({ id: "stale", status: "pending" });
+    const incoming = [trimProposal({ id: "fresh" })];
+    const result = mergeNewProposals([stale], incoming);
+    expect(result.map((p) => p.id)).toEqual(["fresh"]);
+  });
+
+  it("keeps already-accepted and already-rejected proposals from before", () => {
+    const accepted = trimProposal({ id: "kept-accepted", status: "accepted" });
+    const rejected = speedProposal({ id: "kept-rejected", status: "rejected" });
+    const incoming = [trimProposal({ id: "fresh" })];
+    const result = mergeNewProposals([accepted, rejected], incoming);
+    expect(result.map((p) => p.id)).toEqual(["kept-accepted", "kept-rejected", "fresh"]);
   });
 });
