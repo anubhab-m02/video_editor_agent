@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
@@ -14,7 +15,7 @@ import httpx
 
 from .services.media_service import find_persisted_upload
 from .validators import parse_time_like, validate_trim
-from .video_tools import detect_silence
+from .video_tools import detect_silence, extract_range
 
 logger = logging.getLogger(__name__)
 MAX_CONTEXT_TURNS = 10
@@ -27,6 +28,14 @@ GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     f"{GEMINI_MODEL}:generateContent"
 )
+# ADR-0002 escalation cost guards. CONFIDENCE_THRESHOLD is a placeholder trigger
+# for the P3-2 seam; P3-3 replaces it with the tuned threshold + explicit
+# user-cue trigger and exposes both as dev-panel knobs. Verified live
+# (2026-07-25 spike): this model handles direct video at ~88 tokens/sec, so a
+# 30s window costs ~2,640 tokens — cheap enough that only ONE escalation per
+# plan call is needed, not a budget to spend carefully.
+ESCALATION_CONFIDENCE_THRESHOLD = 0.6
+ESCALATION_MAX_WINDOW_SEC = 30.0
 _SILENCE_KEYWORDS = re.compile(
     r"\b(dead\s*air|silence|silent|pause[s]?|awkward gap[s]?)\b", re.IGNORECASE
 )
@@ -70,6 +79,25 @@ def _encode_sprite_images(files: list[Path]) -> list[dict]:
         except OSError:
             continue
         parts.append({"inline_data": {"mime_type": "image/png", "data": data}})
+    return parts
+
+
+def _encode_video_clip(path: Path) -> dict:
+    data = base64.b64encode(path.read_bytes()).decode("ascii")
+    return {"inline_data": {"mime_type": "video/mp4", "data": data}}
+
+
+def perceive(
+    *, text: str, image_parts: Optional[list[dict]] = None, video_part: Optional[dict] = None
+) -> list[dict]:
+    """ADR-0002 hybrid vision seam — the one place perception strategy is chosen.
+    Coarse pass: image_parts (sprite thumbnails). Escalation: video_part (a short
+    scoped sub-clip, real video). Exactly one of the two is used per call."""
+    parts: list[dict] = [{"text": text}]
+    if video_part is not None:
+        parts.append(video_part)
+    elif image_parts:
+        parts.extend(image_parts)
     return parts
 
 
@@ -205,6 +233,60 @@ async def _call_gemini(api_key: str, parts: list[dict]) -> dict:
     return _extract_json(text)
 
 
+async def _escalate(
+    *, api_key: str, candidate: dict, duration_sec: float, source_path: Path
+) -> Optional[dict]:
+    """Scoped direct-video escalation (ADR-0002): re-perceive a short window around
+    a low-confidence proposal as real video, for a frame-accurate cut the sparse
+    coarse pass couldn't locate. Returns a replacement proposal, or None if the
+    window/extraction/call/parse doesn't produce anything usable."""
+    center = (candidate["start_sec"] + candidate["end_sec"]) / 2
+    window_end = min(duration_sec, center + ESCALATION_MAX_WINDOW_SEC / 2)
+    window_start = max(0.0, window_end - ESCALATION_MAX_WINDOW_SEC)
+    window_len = window_end - window_start
+    if window_len <= 0.5:
+        return None
+
+    with tempfile.TemporaryDirectory(prefix="escalation_") as tmp_dir:
+        try:
+            clip_path = await asyncio.to_thread(
+                extract_range, source_path, Path(tmp_dir), window_start, window_end
+            )
+        except Exception:
+            logger.exception("ESCALATION_EXTRACT_FAILED")
+            return None
+
+        text = (
+            "You are refining an editing suggestion with a closer look. This clip is a "
+            f"{window_len:.3f}s window starting at {window_start:.3f}s of the full video, "
+            f"so your start_sec/end_sec must be relative to THIS clip (0 to {window_len:.3f}), "
+            "not the original video.\n"
+            f"Original lower-confidence suggestion in this window: {candidate['reason']}\n"
+            "Watch the actual video content and return the precise cut. Strict JSON only: "
+            '{"reasoning":string,"suggestions":[{"action":"trim_video|speed_video",'
+            '"operation":"remove_segment|extract_range|apply_speed_range","start_sec":number,'
+            '"end_sec":number,"speed_multiplier":number,"reason":string,"confidence":number}]}\n'
+            f"Each suggestion must satisfy 0 <= start_sec < end_sec <= {window_len:.3f}."
+        )
+        try:
+            video_part = await asyncio.to_thread(_encode_video_clip, clip_path)
+            parsed = await _call_gemini(api_key, perceive(text=text, video_part=video_part))
+        except Exception:
+            logger.exception("ESCALATION_CALL_FAILED")
+            return None
+
+    normalized = _normalize_suggestions(parsed.get("suggestions", []), window_len)
+    if not normalized:
+        return None
+
+    best = max(normalized, key=lambda item: item["confidence"])
+    best["start_sec"] = round(best["start_sec"] + window_start, 3)
+    best["end_sec"] = round(best["end_sec"] + window_start, 3)
+    best["reason"] = f"{best['reason']} (escalated: direct-video zoom-in for precision)"
+    best["confidence"] = max(best["confidence"], candidate["confidence"])
+    return best
+
+
 async def plan_edits(
     *,
     prompt: str,
@@ -222,9 +304,12 @@ async def plan_edits(
 ) -> dict:
     """Plan -> validate -> propose (ADR-0003). One bounded self-correction retry
     if the model's first attempt yields zero valid proposals; falls back to the
-    regex heuristic only if that retry also fails. Silence/dead-air detection
-    (X5) is a deterministic FFmpeg tool that runs independently of Gemini and
-    merges its proposals in regardless of which path produced the rest."""
+    regex heuristic only if that retry also fails. If the least-confident coarse
+    proposal is still below threshold, escalates once (ADR-0002/P3-2): a scoped
+    direct-video re-perceive of just that window for a frame-accurate cut.
+    Silence/dead-air detection (X5) is a deterministic FFmpeg tool that runs
+    independently of Gemini and merges its proposals in regardless of which
+    path produced the rest."""
     plan_id = str(uuid4())
     api_key = os.getenv("GEMINI_API_KEY")
     sprite_files: list[Path] = []
@@ -311,16 +396,17 @@ async def plan_edits(
     )
 
     text_part = f"{instructions}\n{context_block}\nUser prompt: {prompt}"
-    parts: list[dict] = [{"text": text_part}]
+    image_parts: Optional[list[dict]] = None
     if sprite_files:
-        parts[0]["text"] += (
+        text_part += (
             f"\nAttached: {len(sprite_files)} sprite-sheet thumbnail images, sampled evenly "
             f"in chronological order across the full {duration_sec:.1f}s video. Use their visual "
             "content (not just the metadata above) to find real cut points."
         )
-        parts.extend(await asyncio.to_thread(_encode_sprite_images, sprite_files))
+        image_parts = await asyncio.to_thread(_encode_sprite_images, sprite_files)
 
     strategy = "sprite-vision" if sprite_files else "sprite-summary-prompt"
+    parts = perceive(text=text_part, image_parts=image_parts)
     parsed = await _call_gemini(api_key, parts)
     raw_suggestions = parsed.get("suggestions", [])
     reasoning = str(parsed.get("reasoning") or "").strip()
@@ -347,6 +433,24 @@ async def plan_edits(
             normalized = _normalize_suggestions(raw_suggestions, duration_sec)
         except Exception:
             logger.exception("PLAN_EDITS_SELF_CORRECTION_FAILED")
+
+    # Scoped escalation (ADR-0002/P3-2): if the coarse pass's least-confident
+    # proposal is below threshold, zoom in on just that window with real video for
+    # a frame-accurate cut. At most one escalation per plan call (cost guard).
+    if normalized and sprite_job_id and uploads_dir:
+        worst_idx, worst = min(enumerate(normalized), key=lambda pair: pair[1]["confidence"])
+        if worst["confidence"] < ESCALATION_CONFIDENCE_THRESHOLD:
+            source_path = await asyncio.to_thread(find_persisted_upload, uploads_dir, sprite_job_id)
+            if source_path is not None:
+                replacement = await _escalate(
+                    api_key=api_key,
+                    candidate=worst,
+                    duration_sec=duration_sec,
+                    source_path=source_path,
+                )
+                if replacement is not None:
+                    normalized[worst_idx] = replacement
+                    strategy = f"{strategy}+escalation"
 
     if not normalized:
         normalized = _fallback_suggest_cuts(prompt, duration_sec)

@@ -279,3 +279,129 @@ def test_plan_edits_skips_silence_detection_when_upload_missing(tmp_path, monkey
 
     assert called["n"] == 0
     assert not any("silence" in p["reason"].lower() for p in result["proposals"])
+
+
+def test_plan_edits_escalates_low_confidence_proposal(tmp_path, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    sprites_dir = _make_sheets(tmp_path, "job8", 3)
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir()
+    (uploads_dir / "job8.mp4").write_bytes(b"fake-video-bytes")
+
+    # Avoid real ffmpeg/decoding: escalation only needs a Path back, and only needs
+    # something base64-encodable for the (mocked) Gemini call.
+    monkeypatch.setattr(
+        gemini_agent, "extract_range", lambda input_path, output_dir, start_sec, end_sec: input_path
+    )
+    monkeypatch.setattr(
+        gemini_agent, "_encode_video_clip", lambda path: {"inline_data": {"mime_type": "video/mp4", "data": "FAKE"}}
+    )
+
+    call_count = {"n": 0}
+
+    async def fake_post(self, url, json=None, headers=None):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # Coarse pass: one low-confidence proposal, well below threshold.
+            return _FakeResponse(
+                _gemini_json_response(
+                    [
+                        {
+                            "action": "trim_video",
+                            "start_sec": 30.0,
+                            "end_sec": 34.0,
+                            "reason": "maybe boring",
+                            "confidence": 0.4,
+                        }
+                    ]
+                )
+            )
+        # Escalation call: times are relative to the scoped window, not the full video.
+        return _FakeResponse(
+            _gemini_json_response(
+                [
+                    {
+                        "action": "trim_video",
+                        "start_sec": 5.0,
+                        "end_sec": 9.0,
+                        "reason": "precise cut",
+                        "confidence": 0.95,
+                    }
+                ],
+                reasoning="escalated reasoning",
+            )
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    result = asyncio.run(
+        gemini_agent.plan_edits(
+            prompt="find the exact boring moment",
+            duration_sec=60.0,
+            sprite_interval_sec=1.0,
+            total_frames=60,
+            sheets_count=1,
+            sprite_job_id="job8",
+            sprites_dir=sprites_dir,
+            uploads_dir=uploads_dir,
+        )
+    )
+
+    assert call_count["n"] == 2
+    assert result["strategy"] == "sprite-vision+escalation"
+    assert len(result["proposals"]) == 1
+    proposal = result["proposals"][0]
+    # window = [17, 47] (center 32 +/- 15, clamped); local [5,9] maps back to [22,26].
+    assert proposal["start_sec"] == 22.0
+    assert proposal["end_sec"] == 26.0
+    assert "escalated" in proposal["reason"].lower()
+    assert proposal["confidence"] == 0.95
+
+
+def test_plan_edits_does_not_escalate_high_confidence_proposal(tmp_path, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    sprites_dir = _make_sheets(tmp_path, "job9", 3)
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir()
+    (uploads_dir / "job9.mp4").write_bytes(b"fake-video-bytes")
+
+    called = {"n": 0}
+    monkeypatch.setattr(
+        gemini_agent,
+        "extract_range",
+        lambda *a, **kw: called.__setitem__("n", called["n"] + 1) or a[0],
+    )
+
+    async def fake_post(self, url, json=None, headers=None):
+        return _FakeResponse(
+            _gemini_json_response(
+                [
+                    {
+                        "action": "trim_video",
+                        "start_sec": 4.0,
+                        "end_sec": 8.0,
+                        "reason": "confident cut",
+                        "confidence": 0.9,
+                    }
+                ]
+            )
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    result = asyncio.run(
+        gemini_agent.plan_edits(
+            prompt="cut the boring part",
+            duration_sec=60.0,
+            sprite_interval_sec=1.0,
+            total_frames=60,
+            sheets_count=1,
+            sprite_job_id="job9",
+            sprites_dir=sprites_dir,
+            uploads_dir=uploads_dir,
+        )
+    )
+
+    assert called["n"] == 0
+    assert result["strategy"] == "sprite-vision"
+    assert result["proposals"][0]["confidence"] == 0.9
