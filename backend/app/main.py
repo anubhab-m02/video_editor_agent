@@ -27,6 +27,7 @@ from .schemas import (
     TrimRange,
 )
 from .services.media_service import (
+    find_persisted_upload,
     probe_duration_or_cleanup,
     save_upload_file,
     validate_sprite_params,
@@ -387,26 +388,48 @@ async def agent_plan(payload: AgentPlanRequest) -> AgentPlanResponse:
 
 @app.post("/export/from-file", response_model=ExportResponse)
 async def export_from_file(
-    file: UploadFile = File(...),
+    file: Optional[UploadFile] = File(default=None),
+    sprite_job_id: Optional[str] = Form(default=None),
     trim_ranges: str = Form(default="[]"),
     speed_ranges: str = Form(default="[]"),
     speed_multiplier: Optional[float] = Form(default=None),
     speed_factor: Optional[float] = Form(default=None),
     speed: Optional[str] = Form(default=None),
 ) -> ExportResponse:
+    # ADR-0007: prefer the source already persisted under sprite_job_id (from
+    # /analyze/sprites) over re-uploading the whole file. A fresh upload stays
+    # the fallback — needed source only, then deleted; a resolved persisted
+    # source is left alone since other calls (re-plan, later exports) may still need it.
     await asyncio.to_thread(_sweep_stale_media)
     max_mb = int(os.getenv("MAX_FILE_SIZE_MB", "500"))
-    try:
-        input_path = await save_upload_file(
-            file=file, upload_dir=UPLOAD_DIR, max_file_size_mb=max_mb
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    owns_input_path = False
+    if file is not None:
+        try:
+            input_path = await save_upload_file(
+                file=file, upload_dir=UPLOAD_DIR, max_file_size_mb=max_mb
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
+        owns_input_path = True
+    elif sprite_job_id:
+        resolved = await asyncio.to_thread(find_persisted_upload, UPLOAD_DIR, sprite_job_id)
+        if resolved is None:
+            raise HTTPException(
+                status_code=404,
+                detail="No persisted source for this sprite_job_id (it may have expired); re-upload the file.",
+            )
+        input_path = resolved
+    else:
+        raise HTTPException(status_code=400, detail="Provide either file or sprite_job_id.")
 
     try:
-        duration_sec = await asyncio.to_thread(probe_duration_or_cleanup, input_path)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if owns_input_path:
+            duration_sec = await asyncio.to_thread(probe_duration_or_cleanup, input_path)
+        else:
+            # Shared/persisted source: never delete-on-failure, other calls may still need it.
+            duration_sec = await asyncio.to_thread(get_duration_sec, input_path)
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid media file: {exc}") from exc
     _enforce_max_duration(duration_sec)
 
     try:
@@ -510,7 +533,8 @@ async def export_from_file(
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Export failed: {exc}") from exc
     finally:
-        input_path.unlink(missing_ok=True)
+        if owns_input_path:
+            input_path.unlink(missing_ok=True)
 
     return ExportResponse(
         output_url=f"/media/outputs/{output_path.name}",

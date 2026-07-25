@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import httpx
 
+from .services.media_service import find_persisted_upload
 from .validators import parse_time_like, validate_trim
 from .video_tools import detect_silence
 
@@ -33,11 +34,6 @@ _SILENCE_KEYWORDS = re.compile(
 
 def _wants_silence_removal(prompt: str) -> bool:
     return bool(_SILENCE_KEYWORDS.search(prompt))
-
-
-def _find_persisted_upload(uploads_dir: Path, sprite_job_id: str) -> Optional[Path]:
-    matches = list(uploads_dir.glob(f"{sprite_job_id}.*"))
-    return matches[0] if matches else None
 
 
 def _silence_proposals(silences: list[tuple[float, float]]) -> list[dict]:
@@ -239,7 +235,7 @@ async def plan_edits(
 
     silence_suggestions: list[dict] = []
     if _wants_silence_removal(prompt) and sprite_job_id and uploads_dir:
-        source_path = await asyncio.to_thread(_find_persisted_upload, uploads_dir, sprite_job_id)
+        source_path = await asyncio.to_thread(find_persisted_upload, uploads_dir, sprite_job_id)
         if source_path is not None:
             try:
                 silences = await asyncio.to_thread(detect_silence, source_path)

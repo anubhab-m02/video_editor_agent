@@ -40,3 +40,8 @@ def probe_duration_or_cleanup(input_path: Path) -> float:
     except Exception as exc:
         input_path.unlink(missing_ok=True)
         raise ValueError(f"Invalid media file: {exc}") from exc
+
+
+def find_persisted_upload(uploads_dir: Path, sprite_job_id: str) -> Path | None:
+    matches = list(uploads_dir.glob(f"{sprite_job_id}.*"))
+    return matches[0] if matches else None

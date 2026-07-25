@@ -558,20 +558,38 @@ export function Inspector() {
         setIsExporting(true);
         setExportResult(null);
 
-        const form = new FormData();
-        form.append("file", sourceFile);
-        form.append("trim_ranges", JSON.stringify(trimRanges));
-        form.append("speed_ranges", JSON.stringify(speedRanges));
-        if (speedRanges.length === 0) {
-            form.append("speed_multiplier", "1");
-            form.append("speed", "1x");
+        function buildExportForm(useSourceFile: boolean): FormData {
+            const form = new FormData();
+            if (useSourceFile) {
+                form.append("file", sourceFile as File);
+            } else {
+                form.append("sprite_job_id", spriteData!.sprite_job_id);
+            }
+            form.append("trim_ranges", JSON.stringify(trimRanges));
+            form.append("speed_ranges", JSON.stringify(speedRanges));
+            if (speedRanges.length === 0) {
+                form.append("speed_multiplier", "1");
+                form.append("speed", "1x");
+            }
+            return form;
         }
 
+        // ADR-0007: reference the source already persisted under sprite_job_id
+        // instead of re-uploading the whole file, when one exists. Falls back to
+        // a direct upload if the persisted source expired/was swept (404).
+        const hasPersistedSource = Boolean(spriteData?.sprite_job_id);
+
         try {
-            const response = await fetch("/api/export/from-file", {
+            let response = await fetch("/api/export/from-file", {
                 method: "POST",
-                body: form,
+                body: buildExportForm(!hasPersistedSource),
             });
+            if (response.status === 404 && hasPersistedSource) {
+                response = await fetch("/api/export/from-file", {
+                    method: "POST",
+                    body: buildExportForm(true),
+                });
+            }
             const data = (await response.json()) as ExportResponse | { detail?: string };
             if (!response.ok) {
                 const message = "detail" in data ? data.detail : undefined;
