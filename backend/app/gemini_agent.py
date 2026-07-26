@@ -266,6 +266,54 @@ async def _call_gemini(api_key: str, parts: list[dict]) -> tuple[dict, Optional[
     return _extract_json(text), tokens_used
 
 
+def _fallback_summary(lines: list[str], previous_summary: Optional[str]) -> str:
+    user_lines = [line[5:].strip() for line in lines if line.startswith("user:")][-3:]
+    if not user_lines:
+        return (previous_summary or "").strip()[:MAX_SUMMARY_CHARS]
+    return f"Earlier user goals: {' | '.join(user_lines)}"[:MAX_SUMMARY_CHARS]
+
+
+async def summarize_conversation(
+    older_turns: list[dict], previous_summary: Optional[str] = None
+) -> dict:
+    """P3-5/L1: a real small-model summary of the chat turns that just fell out
+    of the raw context window, replacing the old last-3-user-messages heuristic.
+    Rolling, not full-history: folds only the NEWLY overflowed turns into
+    previous_summary, so cost stays flat regardless of session length — this is
+    only called when the raw window actually grows, not on every plan call.
+    Text-only (no images/video) — cheap by construction. Falls back to the old
+    heuristic with no API key or no real turns to summarize."""
+    lines: list[str] = []
+    for turn in older_turns:
+        role = str(turn.get("role", "")).strip().lower()
+        if role not in {"user", "assistant"}:
+            continue
+        content = str(turn.get("content", "")).strip().replace("\n", " ")
+        if content:
+            lines.append(f"{role}: {content[:280]}")
+
+    api_key = os.getenv("GEMINI_API_KEY")
+    real_summary = ""
+    if api_key and lines:
+        text = (
+            "Summarize the earlier portion of a video-editing chat in ONE short sentence, "
+            "focused on what the user wants done to their video — skip pleasantries and "
+            "assistant confirmations.\n"
+            + (f"Summary of even-earlier context: {previous_summary}\n" if previous_summary else "")
+            + "Earlier turns:\n" + "\n".join(lines) + "\n"
+            'Strict JSON only: {"summary": string}'
+        )
+        try:
+            parsed, _tokens_used = await _call_gemini(api_key, perceive(text=text))
+            real_summary = str(parsed.get("summary") or "").strip()
+        except Exception:
+            logger.exception("SUMMARIZE_CONVERSATION_FAILED")
+
+    if real_summary:
+        return {"summary": real_summary[:MAX_SUMMARY_CHARS], "model": GEMINI_MODEL}
+    return {"summary": _fallback_summary(lines, previous_summary), "model": "fallback"}
+
+
 async def _escalate(
     *,
     api_key: str,

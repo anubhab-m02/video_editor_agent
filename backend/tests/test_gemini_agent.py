@@ -684,3 +684,80 @@ def test_plan_edits_strategy_unchanged_when_no_scene_changes_detected(tmp_path, 
     )
 
     assert result["strategy"] == "sprite-vision"
+
+
+def test_summarize_conversation_uses_real_model_call(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+
+    async def fake_post(self, url, json=None, headers=None):
+        return _FakeResponse(
+            {
+                "candidates": [
+                    {"content": {"parts": [{"text": '{"summary": "User wants dead air removed from the intro."}'}]}}
+                ]
+            }
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    result = asyncio.run(
+        gemini_agent.summarize_conversation(
+            older_turns=[
+                {"role": "user", "content": "remove the dead air at the start"},
+                {"role": "assistant", "content": "Removed 3.2s of silence."},
+            ],
+            previous_summary=None,
+        )
+    )
+
+    assert result["summary"] == "User wants dead air removed from the intro."
+    assert result["model"] == "gemini-3.1-flash-lite"
+
+
+def test_summarize_conversation_falls_back_without_api_key(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    result = asyncio.run(
+        gemini_agent.summarize_conversation(
+            older_turns=[
+                {"role": "user", "content": "cut the intro"},
+                {"role": "assistant", "content": "Done."},
+                {"role": "user", "content": "also speed up the outro"},
+            ],
+            previous_summary=None,
+        )
+    )
+
+    assert result["model"] == "fallback"
+    assert "cut the intro" in result["summary"]
+    assert "speed up the outro" in result["summary"]
+
+
+def test_summarize_conversation_falls_back_when_model_call_fails(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+
+    async def fake_post(self, url, json=None, headers=None):
+        raise httpx.ConnectError("boom")
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    result = asyncio.run(
+        gemini_agent.summarize_conversation(
+            older_turns=[{"role": "user", "content": "trim the boring bits"}],
+            previous_summary="Earlier user goals: cut the intro",
+        )
+    )
+
+    assert result["model"] == "fallback"
+    assert "trim the boring bits" in result["summary"]
+
+
+def test_summarize_conversation_falls_back_to_previous_summary_when_no_turns(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    result = asyncio.run(
+        gemini_agent.summarize_conversation(older_turns=[], previous_summary="Earlier user goals: cut the intro")
+    )
+
+    assert result["summary"] == "Earlier user goals: cut the intro"
+    assert result["model"] == "fallback"

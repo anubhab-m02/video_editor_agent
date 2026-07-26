@@ -125,17 +125,15 @@ function computeSpriteInterval(durationSec: number): number {
     return Math.max(0.25, durationSec / TARGET_SPRITE_FRAMES);
 }
 
-function buildConversationSummary(messages: ChatMessage[]): string {
+// P3-5: turns that have fallen out of buildChatHistory's raw sliding window —
+// the candidate pool for summarization. Pure so it's cheap to call every send.
+function getOlderTurns(messages: ChatMessage[]): ChatTurn[] {
     const turns = messages.filter((m) => m.content.trim().length > 0);
-    if (turns.length <= MAX_CONTEXT_MESSAGES) return "";
-    const older = turns.slice(0, -MAX_CONTEXT_MESSAGES);
-    const userGoals = older
-        .filter((m) => m.role === "user")
-        .slice(-3)
-        .map((m) => m.content.replace(/\s+/g, " ").trim())
-        .filter(Boolean);
-    if (userGoals.length === 0) return "";
-    return `Earlier user goals: ${userGoals.join(" | ")}`.slice(0, 500);
+    if (turns.length <= MAX_CONTEXT_MESSAGES) return [];
+    return turns.slice(0, -MAX_CONTEXT_MESSAGES).map((m) => ({
+        role: m.role,
+        content: m.content.replace(/\s+/g, " ").trim().slice(0, 300),
+    }));
 }
 
 function buildChatHistory(messages: ChatMessage[]): ChatTurn[] {
@@ -291,6 +289,13 @@ export function Inspector() {
     const [isSuggesting, setIsSuggesting] = useState(false);
     const [isExporting, setIsExporting] = useState(false);
     const [exportResult, setExportResult] = useState<ExportResponse | null>(null);
+    // P3-5: rolling real-model summary of chat turns that have fallen out of the
+    // raw context window (buildChatHistory's slice), replacing the old
+    // last-3-messages heuristic. summarizedThroughCount tracks how many "older"
+    // messages are already folded in, so only newly-overflowed turns get sent
+    // to /agent/summarize — cost stays flat regardless of session length.
+    const [conversationSummary, setConversationSummary] = useState("");
+    const [summarizedThroughCount, setSummarizedThroughCount] = useState(0);
     // Dev-panel-only (Design Handoff Part 3): session log of real escalation events
     // and a live-adjustable threshold override, not persisted, not creator-facing.
     const [escalationEvents, setEscalationEvents] = useState<EscalationEvent[]>([]);
@@ -361,6 +366,33 @@ export function Inspector() {
         }
     }, [messages, sourceFile]);
 
+    // P3-5: rolling real-model summary. Only calls /agent/summarize when the
+    // "older" bucket has actually grown since last time — folds just the newly
+    // overflowed turns into the cached summary instead of re-summarizing the
+    // whole history every send. Falls back to whatever's cached on failure.
+    async function ensureConversationSummary(nextMessages: ChatMessage[]): Promise<string> {
+        const older = getOlderTurns(nextMessages);
+        if (older.length <= summarizedThroughCount) return conversationSummary;
+        const newTurns = older.slice(summarizedThroughCount);
+        try {
+            const response = await fetch("/api/agent/summarize", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    older_turns: newTurns,
+                    previous_summary: conversationSummary || undefined,
+                }),
+            });
+            if (!response.ok) return conversationSummary;
+            const data = (await response.json()) as { summary: string };
+            setConversationSummary(data.summary);
+            setSummarizedThroughCount(older.length);
+            return data.summary;
+        } catch {
+            return conversationSummary;
+        }
+    }
+
     async function handleSend() {
         if (!input.trim()) return;
         if (isVideoTooLong) {
@@ -395,6 +427,8 @@ export function Inspector() {
             }
         }
 
+        const conversationSummaryForCall = await ensureConversationSummary(nextMessages);
+
         try {
             const response = await fetch("/api/agent/plan", {
                 method: "POST",
@@ -407,7 +441,7 @@ export function Inspector() {
                     sheets_count: activeSpriteData.sheets.length,
                     sprite_job_id: activeSpriteData.sprite_job_id,
                     chat_history: buildChatHistory(nextMessages),
-                    conversation_summary: buildConversationSummary(nextMessages),
+                    conversation_summary: conversationSummaryForCall,
                     trim_ranges: trimRanges,
                     speed_ranges: speedRanges,
                     escalation_confidence_threshold: escalationThreshold,

@@ -77,6 +77,18 @@ class TrimRange(BaseModel):
     end: float
 
 
+class ConversationSummaryRequest(BaseModel):
+    # Only the turns that just fell out of the raw chat_history window (P3-5) —
+    # a rolling summary, not the whole session re-summarized every call.
+    older_turns: list[ChatTurn] = Field(default_factory=list)
+    previous_summary: Optional[str] = None
+
+
+class ConversationSummaryResponse(BaseModel):
+    summary: str
+    model: str
+
+
 class AgentPlanRequest(BaseModel):
     prompt: str = Field(min_length=1)
     duration_sec: float = Field(gt=0)

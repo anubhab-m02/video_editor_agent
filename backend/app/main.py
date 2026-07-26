@@ -16,10 +16,12 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 
-from .gemini_agent import plan_edits
+from .gemini_agent import plan_edits, summarize_conversation
 from .schemas import (
     AgentPlanRequest,
     AgentPlanResponse,
+    ConversationSummaryRequest,
+    ConversationSummaryResponse,
     ExportResponse,
     SpriteAnalysisResponse,
     TokenEstimateRequest,
@@ -387,6 +389,18 @@ async def agent_plan(payload: AgentPlanRequest) -> AgentPlanResponse:
         tokens_used=result.get("tokens_used"),
         escalation=result.get("escalation"),
     )
+
+
+@app.post("/agent/summarize", response_model=ConversationSummaryResponse)
+async def agent_summarize(payload: ConversationSummaryRequest) -> ConversationSummaryResponse:
+    try:
+        result = await summarize_conversation(
+            older_turns=[item.model_dump() for item in payload.older_turns],
+            previous_summary=payload.previous_summary,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return ConversationSummaryResponse(**result)
 
 
 @app.post("/export/from-file", response_model=ExportResponse)
