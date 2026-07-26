@@ -210,6 +210,43 @@ async def require_api_key(request: Request, call_next):
     return await call_next(request)
 
 
+# L2: closes the "leaked URL / runaway loop burns quota or disk" hole the shared
+# API key alone doesn't (ADR-0004) — one key means no per-user throttling, so the
+# limit is per-client-IP instead. ponytail: in-memory sliding-window log, no new
+# dependency; fine at self-host/single-process scale (same reasoning as
+# ADR-0005's threadpool-over-job-queue call). Grows one small entry per unique
+# IP that's ever called a limited endpoint — negligible at this scale; add a
+# periodic sweep if that ever changes.
+RATE_LIMIT_WINDOW_SEC = 60.0
+RATE_LIMIT_AI_PER_MIN = int(os.getenv("RATE_LIMIT_AI_PER_MIN", "10"))
+RATE_LIMIT_EXPORT_PER_MIN = int(os.getenv("RATE_LIMIT_EXPORT_PER_MIN", "5"))
+_RATE_LIMITED_PATHS = {
+    "/agent/plan": RATE_LIMIT_AI_PER_MIN,
+    "/agent/summarize": RATE_LIMIT_AI_PER_MIN,
+    "/export/from-file": RATE_LIMIT_EXPORT_PER_MIN,
+}
+_rate_limit_buckets: dict[tuple[str, str], list[float]] = {}
+
+
+@app.middleware("http")
+async def rate_limit(request: Request, call_next):
+    limit = _RATE_LIMITED_PATHS.get(request.url.path)
+    if limit and limit > 0 and request.method != "OPTIONS":
+        client_ip = request.client.host if request.client else "unknown"
+        key = (client_ip, request.url.path)
+        now = time.time()
+        recent = [t for t in _rate_limit_buckets.get(key, []) if t > now - RATE_LIMIT_WINDOW_SEC]
+        if len(recent) >= limit:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": f"Rate limit exceeded: max {limit} requests/min for this endpoint."},
+                headers={"Retry-After": str(int(RATE_LIMIT_WINDOW_SEC))},
+            )
+        recent.append(now)
+        _rate_limit_buckets[key] = recent
+    return await call_next(request)
+
+
 @app.get("/health")
 def health() -> dict:
     return {"ok": True}

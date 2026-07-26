@@ -337,3 +337,56 @@ def test_sweep_stale_media_disabled_when_ttl_zero(tmp_path, monkeypatch):
     assert old_file.exists()
 
 
+def test_rate_limit_blocks_after_threshold_then_recovers(monkeypatch):
+    import app.main as main
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr(main, "_rate_limit_buckets", {})
+    monkeypatch.setattr(main, "_RATE_LIMITED_PATHS", {**main._RATE_LIMITED_PATHS, "/agent/plan": 3})
+
+    payload = {
+        "prompt": "cut from 4 to 8 seconds",
+        "duration_sec": 20.0,
+        "sprite_interval_sec": 1.0,
+        "total_frames": 20,
+        "sheets_count": 1,
+    }
+
+    for _ in range(3):
+        response = client.post("/agent/plan", json=payload)
+        assert response.status_code == 200
+
+    limited = client.post("/agent/plan", json=payload)
+    assert limited.status_code == 429
+    assert "Retry-After" in limited.headers
+
+    # A different endpoint has its own independent bucket.
+    unaffected = client.post(
+        "/analyze/token-estimate",
+        json={"duration_sec": 10, "interval_sec": 1.0, "columns": 8, "rows": 8, "thumb_width": 256},
+    )
+    assert unaffected.status_code == 200
+
+
+def test_rate_limit_bucket_is_keyed_by_client_ip_and_path(monkeypatch):
+    import app.main as main
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr(main, "_rate_limit_buckets", {})
+    monkeypatch.setattr(main, "_RATE_LIMITED_PATHS", {**main._RATE_LIMITED_PATHS, "/agent/summarize": 1})
+
+    payload = {"older_turns": [{"role": "user", "content": "cut the intro"}], "previous_summary": None}
+
+    first = client.post("/agent/summarize", json=payload)
+    assert first.status_code == 200
+    # Bucketed by (ip, path), not path alone — one busy client on this path
+    # shouldn't also throttle a different client, or a different endpoint.
+    [(bucket_ip, bucket_path)] = main._rate_limit_buckets.keys()
+    assert bucket_path == "/agent/summarize"
+    assert isinstance(bucket_ip, str) and bucket_ip
+
+    second = client.post("/agent/summarize", json=payload)
+    assert second.status_code == 429
+    assert "Retry-After" in second.headers
+
+
