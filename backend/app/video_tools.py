@@ -412,3 +412,52 @@ def detect_silence(
     if len(starts) > len(ends):
         pairs.append((starts[-1], get_duration_sec(input_path)))
     return pairs
+
+
+def detect_scene_changes(
+    input_path: Path,
+    *,
+    threshold: float = 0.3,
+    max_results: int = 6,
+) -> list[float]:
+    """Detect scene-cut timestamps via FFmpeg's scene-change score (ADR-0002/L3).
+    Higher threshold = fewer, more confident cuts. Returns up to max_results
+    timestamps in chronological order."""
+    stderr = _run_capture_stderr(
+        [
+            "ffmpeg",
+            "-i",
+            str(input_path),
+            "-vf",
+            f"select='gt(scene,{threshold})',showinfo",
+            "-f",
+            "null",
+            "-",
+        ]
+    )
+    timestamps = [float(m) for m in re.findall(r"pts_time:([\d.]+)", stderr)]
+    return timestamps[:max_results]
+
+
+def extract_thumbnail(
+    input_path: Path, output_dir: Path, timestamp_sec: float, thumb_width: int = 256
+) -> Path:
+    """Extract a single frame at timestamp_sec as a PNG thumbnail."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{uuid4()}.png"
+    _run(
+        [
+            "ffmpeg",
+            "-y",
+            "-ss",
+            f"{max(0.0, timestamp_sec):.3f}",
+            "-i",
+            str(input_path),
+            "-frames:v",
+            "1",
+            "-vf",
+            f"scale={thumb_width}:-1:flags=lanczos",
+            str(output_path),
+        ]
+    )
+    return output_path

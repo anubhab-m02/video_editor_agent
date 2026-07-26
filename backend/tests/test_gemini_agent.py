@@ -602,3 +602,85 @@ def test_plan_edits_uses_sprites_for_long_clip(tmp_path, monkeypatch):
     assert len(video_parts) == 0
     assert len(image_parts) == 3
     assert result["strategy"] == "sprite-vision"
+
+
+def test_plan_edits_adds_scene_change_frames_when_detected(tmp_path, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    sprites_dir = _make_sheets(tmp_path, "job14", 3)
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir()
+    (uploads_dir / "job14.mp4").write_bytes(b"fake-video-bytes")
+
+    monkeypatch.setattr(
+        gemini_agent, "detect_scene_changes", lambda source_path, threshold, max_results: [12.5, 47.25]
+    )
+    monkeypatch.setattr(
+        gemini_agent, "extract_thumbnail", lambda source_path, output_dir, timestamp_sec: source_path
+    )
+
+    captured = {}
+
+    async def fake_post(self, url, json=None, headers=None):
+        captured["payload"] = json
+        return _FakeResponse(
+            _gemini_json_response(
+                [{"action": "trim_video", "start_sec": 4.0, "end_sec": 8.0, "reason": "boring", "confidence": 0.9}]
+            )
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    result = asyncio.run(
+        gemini_agent.plan_edits(
+            prompt="find the boring part",
+            duration_sec=180.0,
+            sprite_interval_sec=1.0,
+            total_frames=180,
+            sheets_count=1,
+            sprite_job_id="job14",
+            sprites_dir=sprites_dir,
+            uploads_dir=uploads_dir,
+        )
+    )
+
+    parts = captured["payload"]["contents"][0]["parts"]
+    image_parts = [p for p in parts if "inline_data" in p and p["inline_data"]["mime_type"] == "image/png"]
+    # 3 uniform sprite sheets + 2 scene-change frames.
+    assert len(image_parts) == 5
+    assert result["strategy"] == "sprite-vision+adaptive"
+    assert "12.50s" in captured["payload"]["contents"][0]["parts"][0]["text"]
+    assert "47.25s" in captured["payload"]["contents"][0]["parts"][0]["text"]
+
+
+def test_plan_edits_strategy_unchanged_when_no_scene_changes_detected(tmp_path, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    sprites_dir = _make_sheets(tmp_path, "job15", 3)
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir()
+    (uploads_dir / "job15.mp4").write_bytes(b"fake-video-bytes")
+
+    monkeypatch.setattr(gemini_agent, "detect_scene_changes", lambda source_path, threshold, max_results: [])
+
+    async def fake_post(self, url, json=None, headers=None):
+        return _FakeResponse(
+            _gemini_json_response(
+                [{"action": "trim_video", "start_sec": 4.0, "end_sec": 8.0, "reason": "boring", "confidence": 0.9}]
+            )
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    result = asyncio.run(
+        gemini_agent.plan_edits(
+            prompt="find the boring part",
+            duration_sec=180.0,
+            sprite_interval_sec=1.0,
+            total_frames=180,
+            sheets_count=1,
+            sprite_job_id="job15",
+            sprites_dir=sprites_dir,
+            uploads_dir=uploads_dir,
+        )
+    )
+
+    assert result["strategy"] == "sprite-vision"

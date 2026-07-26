@@ -38,3 +38,32 @@ def test_detect_silence_returns_empty_when_no_silence(monkeypatch, tmp_path):
     result = video_tools.detect_silence(tmp_path / "fake.mp4")
 
     assert result == []
+
+
+def test_detect_scene_changes_parses_pts_time_in_order(monkeypatch, tmp_path):
+    stderr = (
+        "[Parsed_showinfo_1 @ 0x1] n:   0 pts:    100 pts_time:12.500000 ...\n"
+        "[Parsed_showinfo_1 @ 0x1] n:   1 pts:    400 pts_time:47.250000 ...\n"
+    )
+    monkeypatch.setattr(video_tools, "_run_capture_stderr", lambda cmd: stderr)
+
+    result = video_tools.detect_scene_changes(tmp_path / "fake.mp4")
+
+    assert result == [12.5, 47.25]
+
+
+def test_detect_scene_changes_caps_at_max_results(monkeypatch, tmp_path):
+    stderr = "".join(f"[showinfo] pts_time:{i}.000000 ...\n" for i in range(10))
+    monkeypatch.setattr(video_tools, "_run_capture_stderr", lambda cmd: stderr)
+
+    result = video_tools.detect_scene_changes(tmp_path / "fake.mp4", max_results=3)
+
+    assert result == [0.0, 1.0, 2.0]
+
+
+def test_detect_scene_changes_returns_empty_when_no_cuts(monkeypatch, tmp_path):
+    monkeypatch.setattr(video_tools, "_run_capture_stderr", lambda cmd: "nothing detected")
+
+    result = video_tools.detect_scene_changes(tmp_path / "fake.mp4")
+
+    assert result == []

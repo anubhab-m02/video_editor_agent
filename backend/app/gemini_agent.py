@@ -15,7 +15,7 @@ import httpx
 
 from .services.media_service import find_persisted_upload
 from .validators import parse_time_like, validate_trim
-from .video_tools import detect_silence, extract_range
+from .video_tools import detect_scene_changes, detect_silence, extract_range, extract_thumbnail
 
 logger = logging.getLogger(__name__)
 MAX_CONTEXT_TURNS = 10
@@ -40,6 +40,14 @@ ESCALATION_MAX_WINDOW_SEC = 30.0
 # coarse sprite pass can't judge from isolated stills. Escalation is skipped on
 # this path — the model already saw everything, there's nothing to zoom into.
 DIRECT_VIDEO_MAX_DURATION_SEC = 120.0
+# P3-4/L3: on the sprite path (long clips), uniform-interval sampling can land
+# entirely between two real cut points — this adds a few extra thumbnails at
+# actual detected scene changes, with their exact timestamps called out in the
+# prompt, so the coarse pass has some precisely-timestamped signal near real
+# transitions instead of only approximate uniform coverage. Bounded and cheap:
+# single small frames, not full tiled sheets.
+MAX_SCENE_FRAMES = 4
+SCENE_CHANGE_THRESHOLD = 0.3
 # P3-3: the trigger is user-cue-first, confidence-second. A P3-2 live test showed
 # the model's self-reported confidence stays high (0.95) even when WRONG on a
 # sampling-gap case — it doesn't "know what it doesn't know" from sparse sprites
@@ -479,6 +487,41 @@ async def plan_edits(
         )
         image_parts = await asyncio.to_thread(_encode_sprite_images, sprite_files)
         strategy = "sprite-vision"
+
+        # P3-4/L3: a few extra, precisely-timestamped thumbnails at real scene
+        # changes, on top of the uniform grid above.
+        if source_path is not None:
+            try:
+                scene_timestamps = await asyncio.to_thread(
+                    detect_scene_changes,
+                    source_path,
+                    threshold=SCENE_CHANGE_THRESHOLD,
+                    max_results=MAX_SCENE_FRAMES,
+                )
+            except Exception:
+                logger.exception("SCENE_DETECTION_FAILED")
+                scene_timestamps = []
+            if scene_timestamps:
+                with tempfile.TemporaryDirectory(prefix="scene_frames_") as tmp_dir:
+                    try:
+                        scene_frame_paths = [
+                            await asyncio.to_thread(extract_thumbnail, source_path, Path(tmp_dir), ts)
+                            for ts in scene_timestamps
+                        ]
+                        scene_image_parts = await asyncio.to_thread(_encode_sprite_images, scene_frame_paths)
+                    except Exception:
+                        logger.exception("SCENE_FRAME_EXTRACT_FAILED")
+                        scene_image_parts = []
+                if scene_image_parts:
+                    image_parts = image_parts + scene_image_parts
+                    ts_list = ", ".join(f"{t:.2f}s" for t in scene_timestamps)
+                    text_part += (
+                        f"\nAlso attached: {len(scene_image_parts)} extra thumbnails at detected "
+                        f"scene-change moments, with EXACT timestamps: {ts_list}. Unlike the sprite "
+                        "grid above (only approximately evenly spaced), these are precise — use them "
+                        "to sharpen cuts near real transitions."
+                    )
+                    strategy = "sprite-vision+adaptive"
     else:
         strategy = "sprite-summary-prompt"
 
