@@ -382,30 +382,30 @@ export function Inspector() {
         const nextMessages = [...messages, userMsg];
         setMessages((prev) => [...prev, userMsg]);
         setInput("");
-        if (!spriteData) {
-            setMessages((prev) => [
-                ...prev,
-                {
-                    id: (Date.now() + 1).toString(),
-                    role: "assistant",
-                    content: "Generate sprites first, then I can suggest trim/speed edit ranges.",
-                },
-            ]);
-            return;
+        setIsSuggesting(true);
+        // ADR-0007/direct-video: every plan call needs the persisted upload +
+        // sprite_job_id regardless of strategy — establish it transparently on
+        // first send instead of making the user click "Sprites" manually first.
+        let activeSpriteData = spriteData;
+        if (!activeSpriteData) {
+            activeSpriteData = await uploadForAnalysis(false);
+            if (!activeSpriteData) {
+                setIsSuggesting(false);
+                return;
+            }
         }
 
-        setIsSuggesting(true);
         try {
             const response = await fetch("/api/agent/plan", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     prompt: userMsg.content,
-                    duration_sec: spriteData.duration_sec,
-                    sprite_interval_sec: spriteData.interval_sec,
-                    total_frames: spriteData.total_frames,
-                    sheets_count: spriteData.sheets.length,
-                    sprite_job_id: spriteData.sprite_job_id,
+                    duration_sec: activeSpriteData.duration_sec,
+                    sprite_interval_sec: activeSpriteData.interval_sec,
+                    total_frames: activeSpriteData.total_frames,
+                    sheets_count: activeSpriteData.sheets.length,
+                    sprite_job_id: activeSpriteData.sprite_job_id,
                     chat_history: buildChatHistory(nextMessages),
                     conversation_summary: buildConversationSummary(nextMessages),
                     trim_ranges: trimRanges,
@@ -493,8 +493,13 @@ export function Inspector() {
         }
     }
 
-    async function handleGenerateSprites() {
-        if (!sourceFile || isAnalyzing || isVideoTooLong) return;
+    // Establishes the persisted upload + sprite_job_id every /agent/plan call
+    // needs (ADR-0007) — regardless of whether the direct-video path (short
+    // clips) ends up using the sprite thumbnails at all. Shared by the manual
+    // "Sprites" button (announceResult=true, shows thumbnails + a chat message)
+    // and the AI chat's silent auto-upload on first send (announceResult=false).
+    async function uploadForAnalysis(announceResult: boolean): Promise<SpriteAnalysisResponse | null> {
+        if (!sourceFile) return null;
         setIsAnalyzing(true);
         setSpriteData(null);
 
@@ -518,14 +523,17 @@ export function Inspector() {
             }
             const spriteResponse = data as SpriteAnalysisResponse;
             setSpriteData(spriteResponse);
-            setMessages((prev) => [
-                ...prev,
-                {
-                    id: Date.now().toString(),
-                    role: "assistant",
-                    content: `Generated ${spriteResponse.sheets.length} sprite sheet(s) for ${spriteResponse.duration_sec}s video.`,
-                },
-            ]);
+            if (announceResult) {
+                setMessages((prev) => [
+                    ...prev,
+                    {
+                        id: Date.now().toString(),
+                        role: "assistant",
+                        content: `Generated ${spriteResponse.sheets.length} sprite sheet(s) for ${spriteResponse.duration_sec}s video.`,
+                    },
+                ]);
+            }
+            return spriteResponse;
         } catch (error) {
             setMessages((prev) => [
                 ...prev,
@@ -538,9 +546,15 @@ export function Inspector() {
                             : "Failed to generate sprite sheets.",
                 },
             ]);
+            return null;
         } finally {
             setIsAnalyzing(false);
         }
+    }
+
+    async function handleGenerateSprites() {
+        if (!sourceFile || isAnalyzing || isVideoTooLong) return;
+        await uploadForAnalysis(true);
     }
 
     async function handleEstimateTokens() {

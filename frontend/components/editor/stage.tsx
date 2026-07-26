@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, type DragEvent, type ChangeEvent } from "react";
+import { useCallback, useEffect, useRef, type DragEvent, type ChangeEvent } from "react";
 import { useState } from "react";
 import {
     Play,
@@ -71,6 +71,23 @@ export function Stage() {
         },
         [loadFile]
     );
+
+    // Spacebar play/pause (standard video-player convention). Skipped while
+    // focus is in a text input/textarea/contenteditable (the chat box) so
+    // typing a space there isn't hijacked into toggling playback.
+    useEffect(() => {
+        function onKeyDown(e: KeyboardEvent) {
+            if (e.code !== "Space" && e.key !== " ") return;
+            const target = e.target as HTMLElement | null;
+            const tag = target?.tagName;
+            if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
+            if (!hasVideo) return;
+            e.preventDefault();
+            togglePlayPause();
+        }
+        window.addEventListener("keydown", onKeyDown);
+        return () => window.removeEventListener("keydown", onKeyDown);
+    }, [hasVideo, togglePlayPause]);
 
     // ── Render ─────────────────────────────────────────────────────
 
