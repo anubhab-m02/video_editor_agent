@@ -95,7 +95,7 @@ export function Stage() {
         <div
             className="relative flex flex-1 flex-col overflow-hidden"
             style={{
-                background: "linear-gradient(180deg, rgba(24,24,27,0.5) 0%, rgba(9,9,11,0.6) 100%)",
+                background: "linear-gradient(180deg, rgba(24,24,27,0.5) 0%, color-mix(in srgb, var(--color-bg) 60%, transparent) 100%)",
                 backdropFilter: "blur(20px)",
             }}
             onDrop={handleDrop}
@@ -118,7 +118,7 @@ export function Stage() {
                         className="relative h-full w-full overflow-hidden rounded-lg"
                         style={{
                             background: "rgb(0,0,0)",
-                            boxShadow: "0 0 0 1px rgba(255,255,255,0.06), 0 8px 32px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.3)",
+                            boxShadow: "0 0 0 1px var(--color-border), 0 8px 32px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.3)",
                         }}
                     >                        <video
                             ref={videoRef}
@@ -135,7 +135,7 @@ export function Stage() {
                         className={`group relative flex h-full w-full cursor-pointer flex-col items-center justify-center gap-4 rounded-xl border transition-all duration-200 ${isDragOver ? "border-primary/60 bg-primary/5" : "border-zinc-700/50 hover:border-zinc-600/60 hover:bg-white/[0.02]"}`}
                         style={{
                             background: isDragOver ? undefined : "linear-gradient(180deg, rgba(39,39,42,0.3) 0%, rgba(24,24,27,0.4) 100%)",
-                            boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04), 0 4px 24px rgba(0,0,0,0.2)",
+                            boxShadow: "var(--inset-highlight), 0 4px 24px rgba(0,0,0,0.2)",
                         }}
                     >
                         <div className={`flex h-16 w-16 items-center justify-center rounded-2xl transition-colors duration-200 ${isDragOver ? "bg-primary/20" : "bg-zinc-800 group-hover:bg-primary/20"}`}>
@@ -162,7 +162,7 @@ export function Stage() {
             <div
                 className={`flex w-full shrink-0 flex-col gap-1.5 px-4 py-2 transition-opacity duration-200 ${hasVideo ? "opacity-100" : "pointer-events-none opacity-30"}`}
                 style={{
-                    borderTop: "1px solid rgba(255,255,255,0.06)",
+                    borderTop: "1px solid var(--color-border)",
                     background: "linear-gradient(180deg, rgba(39,39,42,0.4) 0%, rgba(24,24,27,0.5) 100%)",
                 }}
             >

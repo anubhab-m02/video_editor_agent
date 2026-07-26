@@ -722,8 +722,8 @@ export function Inspector() {
         <div
             className="flex h-full w-[320px] shrink-0 flex-col"
             style={{
-                borderLeft: "1px solid rgba(255,255,255,0.06)",
-                background: "linear-gradient(180deg, rgba(24,24,27,0.7) 0%, rgba(9,9,11,0.8) 100%)",
+                borderLeft: "1px solid var(--color-border)",
+                background: "linear-gradient(180deg, var(--color-surface) 0%, color-mix(in srgb, var(--color-bg) 80%, transparent) 100%)",
                 backdropFilter: "blur(20px)",
             }}
         >
@@ -733,8 +733,8 @@ export function Inspector() {
                 <button
                     className="group relative w-full rounded-xl py-2.5 text-sm font-semibold text-white transition-all duration-200 ease disabled:opacity-40 disabled:cursor-not-allowed"
                     style={{
-                        background: "linear-gradient(180deg, rgb(16,185,129) 0%, rgb(5,150,105) 100%)",
-                        boxShadow: "0 0 0 1px rgba(52,211,153,0.3), 0 1px 0 0 rgba(255,255,255,0.1) inset, 0 4px 16px -4px rgba(16,185,129,0.4), 0 1px 2px rgba(0,0,0,0.2)",
+                        background: "linear-gradient(180deg, var(--color-primary) 0%, var(--color-primary-deep) 100%)",
+                        boxShadow: "0 0 0 1px rgba(52,211,153,0.3), 0 1px 0 0 rgba(255,255,255,0.1) inset, 0 4px 16px -4px var(--color-primary-glow), 0 1px 2px rgba(0,0,0,0.2)",
                     }}
                     onClick={handleExportVideo}
                     disabled={!sourceFile || isExporting || isVideoTooLong}
@@ -753,7 +753,7 @@ export function Inspector() {
                         className="block rounded-lg px-3 py-2 text-center text-xs text-emerald-300 transition-colors duration-200 ease hover:bg-emerald-500/15"
                         style={{
                             border: "1px solid rgba(52,211,153,0.2)",
-                            background: "rgba(16,185,129,0.06)",
+                            background: "color-mix(in srgb, var(--color-primary) 6%, transparent)",
                         }}
                     >
                         Open Export: {exportResult.output_name}
@@ -765,9 +765,9 @@ export function Inspector() {
                     <button
                         className="flex flex-1 items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-medium text-zinc-300 transition-all duration-200 ease hover:text-zinc-100 disabled:opacity-40 disabled:cursor-not-allowed"
                         style={{
-                            border: "1px solid rgba(255,255,255,0.06)",
-                            background: "linear-gradient(180deg, rgba(39,39,42,0.5) 0%, rgba(24,24,27,0.6) 100%)",
-                            boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+                            border: "1px solid var(--color-border)",
+                            background: "var(--color-surface-raised)",
+                            boxShadow: "var(--inset-highlight)",
                         }}
                         onClick={handleGenerateSprites}
                         disabled={!sourceFile || isAnalyzing || isVideoTooLong}
@@ -781,8 +781,8 @@ export function Inspector() {
                     <p
                         className="rounded-lg px-2.5 py-1.5 text-xs text-amber-300"
                         style={{
-                            border: "1px solid rgba(245,158,11,0.2)",
-                            background: "rgba(245,158,11,0.06)",
+                            border: "1px solid color-mix(in srgb, var(--color-warning) 20%, transparent)",
+                            background: "color-mix(in srgb, var(--color-warning) 6%, transparent)",
                         }}
                     >
                         AI/Export is limited to {formatDurationLabel(MAX_VIDEO_DURATION_SEC)} max. Current: {durationLabel}.
@@ -807,9 +807,9 @@ export function Inspector() {
                         <div
                             className="rounded-lg p-2"
                             style={{
-                                border: "1px solid rgba(255,255,255,0.06)",
-                                background: "linear-gradient(180deg, rgba(39,39,42,0.5) 0%, rgba(24,24,27,0.6) 100%)",
-                                boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+                                border: "1px solid var(--color-border)",
+                                background: "var(--color-surface-raised)",
+                                boxShadow: "var(--inset-highlight)",
                             }}
                         >
                             <p className="text-xs text-zinc-400">
@@ -868,8 +868,8 @@ export function Inspector() {
                                 style={{
                                     background: msg.role === "assistant"
                                         ? "linear-gradient(180deg, rgba(39,39,42,0.6) 0%, rgba(24,24,27,0.7) 100%)"
-                                        : "rgba(16,185,129,0.1)",
-                                    border: `1px solid ${msg.role === "assistant" ? "rgba(255,255,255,0.06)" : "rgba(16,185,129,0.15)"}`,
+                                        : "var(--color-primary-tint)",
+                                    border: `1px solid ${msg.role === "assistant" ? "var(--color-border)" : "color-mix(in srgb, var(--color-primary) 15%, transparent)"}`,
                                 }}
                             >
                                 {msg.content}
@@ -880,9 +880,9 @@ export function Inspector() {
                         <div
                             className="rounded-lg p-3"
                             style={{
-                                border: "1px solid rgba(255,255,255,0.06)",
-                                background: "linear-gradient(180deg, rgba(39,39,42,0.5) 0%, rgba(24,24,27,0.6) 100%)",
-                                boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+                                border: "1px solid var(--color-border)",
+                                background: "var(--color-surface-raised)",
+                                boxShadow: "var(--inset-highlight)",
                             }}
                         >
                             <div className="flex items-center justify-between">
@@ -914,8 +914,8 @@ export function Inspector() {
                                         aria-label={`${p.action === "speed_video" ? "Speed" : "Trim"} proposal, ${p.start_sec.toFixed(2)} to ${p.end_sec.toFixed(2)} seconds, ${Math.round(p.confidence * 100)}% confidence, ${p.status}`}
                                         className={`rounded border px-2 py-1.5 text-[11px] transition-opacity duration-200 ease ${p.status === "rejected" ? "opacity-40" : ""}`}
                                         style={{
-                                            borderColor: p.status === "accepted" ? "rgba(52,211,153,0.35)" : "rgba(255,255,255,0.06)",
-                                            background: p.status === "accepted" ? "rgba(16,185,129,0.06)" : "rgba(255,255,255,0.03)",
+                                            borderColor: p.status === "accepted" ? "rgba(52,211,153,0.35)" : "var(--color-border)",
+                                            background: p.status === "accepted" ? "color-mix(in srgb, var(--color-primary) 6%, transparent)" : "rgba(255,255,255,0.03)",
                                         }}
                                     >
                                         <div className="flex items-center gap-2 text-zinc-300">
@@ -979,9 +979,9 @@ export function Inspector() {
                 <div
                     className="flex items-end gap-2 rounded-xl px-3 py-2.5 ring-1 ring-transparent transition-all duration-200 ease focus-within:ring-primary/40"
                     style={{
-                        border: "1px solid rgba(255,255,255,0.08)",
-                        background: "linear-gradient(180deg, rgba(39,39,42,0.5) 0%, rgba(24,24,27,0.6) 100%)",
-                        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04), inset 0 -1px 2px rgba(0,0,0,0.2)",
+                        border: "1px solid var(--color-border-strong)",
+                        background: "var(--color-surface-raised)",
+                        boxShadow: "var(--inset-highlight), inset 0 -1px 2px rgba(0,0,0,0.2)",
                     }}
                 >
                     <textarea

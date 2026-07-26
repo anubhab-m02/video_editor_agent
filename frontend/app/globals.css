@@ -23,6 +23,22 @@
   --input: 240 3.7% 15.9%;
   --ring: 142 71% 45%;
   --radius: 0.625rem;
+
+  /* X8 design tokens (Design Handoff Part 1) — values lifted verbatim from the
+     glassmorphism inline styles in stage.tsx/inspector.tsx/dev-panel.tsx, not a
+     redesign. Other opacities of the same hue are derived via color-mix()
+     rather than adding a token per shade. */
+  --color-bg: rgb(9, 9, 11);
+  --color-surface: rgba(24, 24, 27, 0.7);
+  --color-surface-raised: linear-gradient(180deg, rgba(39, 39, 42, 0.5) 0%, rgba(24, 24, 27, 0.6) 100%);
+  --color-border: rgba(255, 255, 255, 0.06);
+  --color-border-strong: rgba(255, 255, 255, 0.08);
+  --color-primary: rgb(16, 185, 129);
+  --color-primary-deep: rgb(5, 150, 105);
+  --color-primary-tint: rgba(16, 185, 129, 0.1);
+  --color-primary-glow: rgba(16, 185, 129, 0.4);
+  --color-warning: rgb(245, 158, 11);
+  --inset-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
 * {
